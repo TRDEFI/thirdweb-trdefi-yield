@@ -97,6 +97,16 @@ footer a{color:var(--gold);text-decoration:none}
     <div id="posList"><p class="note">Connect a wallet to see your positions.</p></div>
   </div>
 
+  <div class="card" id="trial">
+    <h2>4 · Sepolia trial — real user-signed flow (testnet, no value)</h2>
+    <div class="sub">Base Sepolia (84532). Retail program built off-chain, approve + ship signed in YOUR wallet. Needs Sepolia ETH + test USDC/dUSDT.</div>
+    <div style="margin-top:6px">
+      <button class="btn" id="trialBtn">Run Sepolia trial</button>
+    </div>
+    <div class="draft" id="trialOut" style="display:none"></div>
+    <p class="note">Steps: balance check → off-chain order (byte-exact port) → approve USDC → approve dUSDT → ship. Each step asks for your signature. Nothing is custodial.</p>
+  </div>
+
   <div class="card">
     <h2>How the money moves (and doesn't)</h2>
     <div class="kv"><span>approve + ship</span><b>allowance only, no transfer</b></div>
@@ -114,7 +124,7 @@ footer a{color:var(--gold);text-decoration:none}
 
 <script>
 const API = 'https://yield.trdefi.com/api/strategies';
-const CLIENT_ID = 'PASTE_THIRDWEB_CLIENT_ID';
+const CLIENT_ID = '8806ca8739e711e387da3bfb7c20a3f0'; // publishable — domain-restricted in dashboard
 let wallet = null, account = null, pairs = [];
 
 const $ = id => document.getElementById(id);
@@ -145,21 +155,25 @@ async function loadPairs(){
   });
 }
 
-// 2 · connect (thirdweb, degrades gracefully)
+// 2 · connect (thirdweb SDK)
 $('connectBtn').onclick = async ()=>{
-  if(typeof window.thirdweb==='undefined'||CLIENT_ID.startsWith('PASTE')){
-    alert('Wallet SDK not configured yet (client ID pending). Pair browser + studio work read-only.');
-    return;
-  }
+  if(typeof window.thirdweb==='undefined'){ alert('Wallet SDK failed to load. Check connection and retry.'); return; }
   try{
     const client = window.thirdweb.createThirdwebClient({clientId:CLIENT_ID});
-    wallet = window.thirdweb.createWallet('io.metamask');
-    account = await wallet.connect({client});
+    const wallets = [window.thirdweb.createWallet('io.metamask'), window.thirdweb.createWallet('com.coinbase.wallet'), window.thirdweb.createWallet('injected')];
+    let lastErr = null;
+    for(const w of wallets){
+      try{ wallet = w; account = await w.connect({client}); lastErr = null; break; }
+      catch(e){ lastErr = e; }
+    }
+    if(lastErr) throw lastErr;
+    window.__twClient = client;
     $('walletAddr').textContent = account.address;
     $('walletLine').style.display='block';
     $('connectBtn').textContent='Connected'; $('connectBtn').disabled=true;
     loadPositions(account.address.toLowerCase());
-  }catch(e){ alert('Connect failed: '+e.message); }
+    const fr = $('feeReceiver'); if(fr && !fr.value) fr.placeholder = account.address + ' (default)';
+  }catch(e){ alert('Connect failed: '+(e && e.message || e)); }
 };
 
 // 3 · commission slider
@@ -210,6 +224,76 @@ async function loadPositions(maker){
 }
 
 loadPairs();
+</script>
+<script type="module">
+import { buildRetailProgram, buildTraits, buildOrderData } from './ai-agent/build-order.js';
+const SEP = {
+  chainId: 84532,
+  aqua: '0x264fabbC81cf7Fb99f124C16aD0dfe08Fb639Df3',
+  router: '0xc549A34966352Bbc0A294BC3b717b390317776e1',
+  usdc: '0x036cbd53842c5426634e7929541ec2318f3dcf7e',
+  dusdt: '0xa1b5da715e26418458e7639de17a99984094d210',
+  explorer: 'https://sepolia.basescan.org/tx/',
+};
+const $t = id => document.getElementById(id);
+const pad32 = h => h.replace(/^0x/,'').toLowerCase().padStart(64,'0');
+const u256 = n => BigInt(n).toString(16).padStart(64,'0');
+function log(msg){ const o=$t('trialOut'); o.style.display='block'; o.textContent += msg+'\n'; }
+async function read(client, chain, addr, method, params){
+  const c = window.thirdweb.getContract({client, chain, address: addr});
+  return window.thirdweb.readContract({contract: c, method, params});
+}
+$t('trialBtn').onclick = async ()=>{
+  $t('trialOut').style.display='block'; $t('trialOut').textContent='';
+  try{
+    if(!window.__twClient || !account){ log('Connect a wallet first (top button).'); return; }
+    const tw = window.thirdweb, client = window.__twClient;
+    const chain = tw.defineChain(SEP.chainId);
+    const me = account.address;
+    log('Wallet: '+me);
+    // balances + decimals
+    const erc20bal = 'function balanceOf(address) view returns (uint256)';
+    const dec = 'function decimals() view returns (uint8)';
+    const rpcBal = await fetch('https://base-sepolia-rpc.publicnode.com',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_getBalance',params:[me,'latest']})}).then(r=>r.json()).then(j=>BigInt(j.result)).catch(()=>0n);
+    const [usdcBal, dusdtBal, usdcDec, dusdtDec] = await Promise.all([
+      read(client, chain, SEP.usdc, erc20bal, [me]),
+      read(client, chain, SEP.dusdt, erc20bal, [me]),
+      read(client, chain, SEP.usdc, dec, []).catch(()=>6),
+      read(client, chain, SEP.dusdt, dec, []).catch(()=>18),
+    ]);
+    const eth = { value: rpcBal };
+    log(`USDC: ${usdcBal} (dec ${usdcDec}) | dUSDT: ${dusdtBal} (dec ${dusdtDec}) | ETH: ${eth.value}`);
+    if(eth.value === 0n){ log('No Sepolia ETH for gas — get faucet ETH first.'); return; }
+    const X = 10n ** BigInt(usdcDec), Y = 10n ** BigInt(dusdtDec); // 1 token each
+    if(usdcBal < X || dusdtBal < Y){ log('Need 1 test USDC + 1 test dUSDT. Ask for faucet/mint, then retry.'); return; }
+    // tokenA/tokenB sorted
+    const tokenA = SEP.usdc.toLowerCase() < SEP.dusdt.toLowerCase() ? SEP.usdc : SEP.dusdt;
+    const tokenB = tokenA === SEP.usdc ? SEP.dusdt : SEP.usdc;
+    const balA = tokenA === SEP.usdc ? X : Y, balB = tokenA === SEP.usdc ? Y : X;
+    const feeBps = Math.min(Math.max(+$('feeBps').value || 0, 0), 2000000);
+    const receiver = ($('feeReceiver').value.trim() || me);
+    const saltHex = '0x' + BigInt(Date.now()).toString(16).padStart(16,'0') + '0'.repeat(48);
+    const salt64 = BigInt('0x' + saltHex.slice(2, 18));
+    const program = buildRetailProgram;
+    const programHex = program({tokenA, tokenB, x0: balA, y0: balB, makerFeeBps: feeBps, feeReceiver: receiver, salt64});
+    const traits = buildTraits();
+    const dataHex = buildOrderData({tokenA, tokenB, programHex});
+    // abi-encode order tuple (maker, traits, data)
+    const orderHex = '0x' + pad32(me) + u256(traits) + u256(96) + u256((dataHex.length-2)/2) + dataHex.slice(2) + '0'.repeat((64 - ((dataHex.length-2)/2*2 % 64)) % 64);
+    log(`Order ready: pair sorted, fee ${(feeBps/100000).toFixed(2)}%, ${((programHex.length-2)/2)} program bytes.`);
+    const send = async (to, method, params, label) => {
+      const contract = tw.getContract({client, chain, address: to});
+      const tx = tw.prepareContractCall({contract, method, params});
+      const res = await tw.sendTransaction({transaction: tx, account});
+      log(`${label}: ${SEP.explorer}${res.transactionHash}`);
+      return res;
+    };
+    await send(tokenA, 'function approve(address,uint256) returns (bool)', [SEP.aqua, balA], 'approve A');
+    await send(tokenB, 'function approve(address,uint256) returns (bool)', [SEP.aqua, balB], 'approve B');
+    await send(SEP.aqua, 'function ship(address,bytes,address[],uint256[]) returns (bytes32)', [SEP.router, orderHex, [tokenA, tokenB], [balA, balB]], 'ship');
+    log('DONE — strategy shipped on Sepolia. Verify on explorer, then dock + revoke to exit.');
+  }catch(e){ log('FAILED: ' + (e && e.message || e)); }
+};
 </script>
 </body>
 </html>

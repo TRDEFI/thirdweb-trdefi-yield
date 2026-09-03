@@ -3,6 +3,8 @@
 .env.local
 keys/*.key.txt
 keys/*.key
+keys/*.client-id.txt
+keys/*.secret.txt
 
 # Deps / build
 node_modules/
