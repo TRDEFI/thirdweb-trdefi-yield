@@ -87,15 +87,20 @@ export function buildTR01Program({ tokenA, tokenB, x0, y0, feeReceiver, salt64 }
 
 // Retail program (Model A): single user commission via FeeProtocol, no FeeFlatIn,
 // no protocol cut. makerFeeBps: 0..2_000_000 (0..20%).
+// NOTE: on-chain FeeProtocol with feeBps=0 && surplusBps=0 reverts
+// (FeeProtocolNoFeeFlagsSet), so the opcode is omitted when fee is zero —
+// TRDEFI_Retail.buildProgram mirrors this exactly.
 export function buildRetailProgram({ tokenA, tokenB, x0, y0, makerFeeBps, feeReceiver, salt64 }) {
   validateCommon({ tokenA, tokenB, feeReceiver, x0, y0 });
   makerFeeBps = Number(makerFeeBps);
   if (!(makerFeeBps >= 0 && makerFeeBps <= MAX_RETAIL_FEE_BPS)) throw new Error('fee out of range 0..20%');
-  return toHex(concat(
-    feeProtocolProgram({ feeReceiver: norm(feeReceiver), feeBps: makerFeeBps }),
+  const parts = [];
+  if (makerFeeBps > 0) parts.push(feeProtocolProgram({ feeReceiver: norm(feeReceiver), feeBps: makerFeeBps }));
+  parts.push(
     peggedSwapProgram({ x0, y0 }),
     saltProgram(salt64),
-  ));
+  );
+  return toHex(concat(...parts));
 }
 
 // Order traits for TRDEFI_TR01Builder.buildOrder args used (no hooks, receiver=0, aqua mode).
