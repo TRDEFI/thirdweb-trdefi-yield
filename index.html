@@ -38,7 +38,13 @@ footer a{color:var(--gold);text-decoration:none}
 .kv{display:flex;justify-content:space-between;font-size:13.5px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04)}
 .kv b{color:var(--gold)}
 </style>
-<script src="https://cdn.jsdelivr.net/npm/thirdweb@5/dist/browser.umd.min.js"></script>
+<script type="importmap">
+{"imports":{
+  "thirdweb": "https://esm.sh/thirdweb@5.121.1",
+  "thirdweb/wallets": "https://esm.sh/thirdweb@5.121.1/wallets",
+  "thirdweb/chains": "https://esm.sh/thirdweb@5.121.1/chains"
+}}
+</script>
 </head>
 <body>
 <div class="hero">
@@ -155,19 +161,11 @@ async function loadPairs(){
   });
 }
 
-// 2 · connect (thirdweb SDK)
+// 2 · connect (bridged to ESM thirdweb module — see window.TW below)
 $('connectBtn').onclick = async ()=>{
-  if(typeof window.thirdweb==='undefined'){ alert('Wallet SDK failed to load. Check connection and retry.'); return; }
+  if(!window.TW){ alert('Wallet module still loading. Wait a few seconds and retry.'); return; }
   try{
-    const client = window.thirdweb.createThirdwebClient({clientId:CLIENT_ID});
-    const wallets = [window.thirdweb.createWallet('io.metamask'), window.thirdweb.createWallet('com.coinbase.wallet'), window.thirdweb.createWallet('injected')];
-    let lastErr = null;
-    for(const w of wallets){
-      try{ wallet = w; account = await w.connect({client}); lastErr = null; break; }
-      catch(e){ lastErr = e; }
-    }
-    if(lastErr) throw lastErr;
-    window.__twClient = client;
+    account = await window.TW.connect();
     $('walletAddr').textContent = account.address;
     $('walletLine').style.display='block';
     $('connectBtn').textContent='Connected'; $('connectBtn').disabled=true;
@@ -226,7 +224,15 @@ async function loadPositions(maker){
 loadPairs();
 </script>
 <script type="module">
+import { createThirdwebClient, getContract, prepareContractCall, sendTransaction, readContract, defineChain } from 'thirdweb';
+import { createWallet } from 'thirdweb/wallets';
+import { baseSepolia } from 'thirdweb/chains';
 import { buildRetailProgram, buildTraits, buildOrderData } from './ai-agent/build-order.js';
+
+const CLIENT = createThirdwebClient({ clientId: '8806ca8739e711e387da3bfb7c20a3f0' }); // publishable, domain-restricted
+let twAccount = null;
+
+// Sepolia trial constants (TR-01 deployment doc)
 const SEP = {
   chainId: 84532,
   aqua: '0x264fabbC81cf7Fb99f124C16aD0dfe08Fb639Df3',
@@ -239,52 +245,61 @@ const $t = id => document.getElementById(id);
 const pad32 = h => h.replace(/^0x/,'').toLowerCase().padStart(64,'0');
 const u256 = n => BigInt(n).toString(16).padStart(64,'0');
 function log(msg){ const o=$t('trialOut'); o.style.display='block'; o.textContent += msg+'\n'; }
-async function read(client, chain, addr, method, params){
-  const c = window.thirdweb.getContract({client, chain, address: addr});
-  return window.thirdweb.readContract({contract: c, method, params});
-}
+
+window.TW = {
+  client: CLIENT,
+  async connect(){
+    const wallets = [createWallet('io.metamask'), createWallet('com.coinbase.wallet'), createWallet('injected')];
+    let lastErr = null;
+    for(const w of wallets){
+      try{ twAccount = await w.connect({client: CLIENT}); wallet = w; account = twAccount; lastErr = null; break; }
+      catch(e){ lastErr = e; }
+    }
+    if(lastErr) throw lastErr;
+    window.__twClient = CLIENT;
+    return twAccount;
+  }
+};
+
 $t('trialBtn').onclick = async ()=>{
   $t('trialOut').style.display='block'; $t('trialOut').textContent='';
   try{
-    if(!window.__twClient || !account){ log('Connect a wallet first (top button).'); return; }
-    const tw = window.thirdweb, client = window.__twClient;
-    const chain = tw.defineChain(SEP.chainId);
-    const me = account.address;
+    if(!twAccount){ log('Connect a wallet first (top button).'); return; }
+    const chain = baseSepolia;
+    const me = twAccount.address;
     log('Wallet: '+me);
-    // balances + decimals
     const erc20bal = 'function balanceOf(address) view returns (uint256)';
     const dec = 'function decimals() view returns (uint8)';
     const rpcBal = await fetch('https://base-sepolia-rpc.publicnode.com',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_getBalance',params:[me,'latest']})}).then(r=>r.json()).then(j=>BigInt(j.result)).catch(()=>0n);
+    const read = (addr, method, params) => readContract({contract: getContract({client: CLIENT, chain, address: addr}), method, params});
     const [usdcBal, dusdtBal, usdcDec, dusdtDec] = await Promise.all([
-      read(client, chain, SEP.usdc, erc20bal, [me]),
-      read(client, chain, SEP.dusdt, erc20bal, [me]),
-      read(client, chain, SEP.usdc, dec, []).catch(()=>6),
-      read(client, chain, SEP.dusdt, dec, []).catch(()=>18),
+      read(SEP.usdc, erc20bal, [me]),
+      read(SEP.dusdt, erc20bal, [me]),
+      read(SEP.usdc, dec, []).catch(()=>6),
+      read(SEP.dusdt, dec, []).catch(()=>18),
     ]);
-    const eth = { value: rpcBal };
-    log(`USDC: ${usdcBal} (dec ${usdcDec}) | dUSDT: ${dusdtBal} (dec ${dusdtDec}) | ETH: ${eth.value}`);
-    if(eth.value === 0n){ log('No Sepolia ETH for gas — get faucet ETH first.'); return; }
+    log(`USDC: ${usdcBal} (dec ${usdcDec}) | dUSDT: ${dusdtBal} (dec ${dusdtDec}) | ETH: ${rpcBal}`);
+    if(rpcBal === 0n){ log('No Sepolia ETH for gas — get faucet ETH first.'); return; }
     const X = 10n ** BigInt(usdcDec), Y = 10n ** BigInt(dusdtDec); // 1 token each
     if(usdcBal < X || dusdtBal < Y){ log('Need 1 test USDC + 1 test dUSDT. Ask for faucet/mint, then retry.'); return; }
-    // tokenA/tokenB sorted
     const tokenA = SEP.usdc.toLowerCase() < SEP.dusdt.toLowerCase() ? SEP.usdc : SEP.dusdt;
     const tokenB = tokenA === SEP.usdc ? SEP.dusdt : SEP.usdc;
     const balA = tokenA === SEP.usdc ? X : Y, balB = tokenA === SEP.usdc ? Y : X;
-    const feeBps = Math.min(Math.max(+$('feeBps').value || 0, 0), 2000000);
-    const receiver = ($('feeReceiver').value.trim() || me);
+    const feeInput = $t('feeBps');
+    const feeBps = Math.min(Math.max(+(feeInput ? feeInput.value : 30) || 0, 0), 2000000);
+    const recvInput = $t('feeReceiver');
+    const receiver = ((recvInput && recvInput.value.trim()) || me);
     const saltHex = '0x' + BigInt(Date.now()).toString(16).padStart(16,'0') + '0'.repeat(48);
     const salt64 = BigInt('0x' + saltHex.slice(2, 18));
-    const program = buildRetailProgram;
-    const programHex = program({tokenA, tokenB, x0: balA, y0: balB, makerFeeBps: feeBps, feeReceiver: receiver, salt64});
+    const programHex = buildRetailProgram({tokenA, tokenB, x0: balA, y0: balB, makerFeeBps: feeBps, feeReceiver: receiver, salt64});
     const traits = buildTraits();
     const dataHex = buildOrderData({tokenA, tokenB, programHex});
-    // abi-encode order tuple (maker, traits, data)
     const orderHex = '0x' + pad32(me) + u256(traits) + u256(96) + u256((dataHex.length-2)/2) + dataHex.slice(2) + '0'.repeat((64 - ((dataHex.length-2)/2*2 % 64)) % 64);
     log(`Order ready: pair sorted, fee ${(feeBps/100000).toFixed(2)}%, ${((programHex.length-2)/2)} program bytes.`);
     const send = async (to, method, params, label) => {
-      const contract = tw.getContract({client, chain, address: to});
-      const tx = tw.prepareContractCall({contract, method, params});
-      const res = await tw.sendTransaction({transaction: tx, account});
+      const contract = getContract({client: CLIENT, chain, address: to});
+      const tx = prepareContractCall({contract, method, params});
+      const res = await sendTransaction({transaction: tx, account: twAccount});
       log(`${label}: ${SEP.explorer}${res.transactionHash}`);
       return res;
     };
