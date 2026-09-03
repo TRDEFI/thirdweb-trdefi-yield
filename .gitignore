@@ -1,0 +1,14 @@
+# Secrets — never commit
+.env
+.env.local
+keys/*.key.txt
+keys/*.key
+
+# Deps / build
+node_modules/
+dist/
+.netlify/
+
+# OS
+.DS_Store
+Thumbs.db
