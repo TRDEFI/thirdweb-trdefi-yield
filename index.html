@@ -50,8 +50,13 @@ footer a{color:var(--gold);text-decoration:none}
 <div class="hero">
   <h1>TRDeFi <span>×</span> thirdweb</h1>
   <p>Earn swap fees on any verified pair without moving funds from your wallet. Connect, pick a pair, set your commission, approve — revoke anytime in one transaction. No lock-up. No guaranteed APY.</p>
-  <div id="connectZone"><button class="btn" id="connectBtn">Connect wallet</button><a class="btn ghost" href="#studio">Open Maker Studio</a></div>
-  <p class="note" id="extLine">Checking for browser wallet…</p>
+  <div id="connectZone">
+    <button class="btn" id="deskBtn">🖥️ Desktop — extension login</button>
+    <button class="btn ghost" id="mobBtn">📱 Mobile — QR login</button>
+    <a class="btn ghost" href="#studio">Open Maker Studio</a>
+  </div>
+  <p class="note" id="extLine">Checking for browser extension…</p>
+  <p class="note" id="connLine">Bağlantı: <span class="warn">bağlı değil</span></p>
   <div id="emailZone" style="margin-top:8px">
     <span class="note">No extension? Login with email instead: </span>
     <input type="text" id="emailInput" placeholder="you@company.com" style="max-width:240px;display:inline-block">
@@ -177,6 +182,7 @@ async function loadPairs(){
     if(!pairs.some(p=>p.chain===k.chain && p.pair===k.pair)) pairs.push({...k,src:'list'});
   }
   if(!pairs.length) pairs = [{chain:'base',pair:'USDC/USDT',verified:true,src:'fallback'}];
+  window.__pairs = pairs;
   const nLive = pairs.filter(p=>p.src==='live').length;
   $('pairCount').textContent = `· ${pairs.length} pairs (${nLive} live on-chain)`;
   $('pairList').innerHTML = pairs.map((p,i)=>{
@@ -192,18 +198,19 @@ async function loadPairs(){
   });
 }
 
-// 2 · connect (bridged to ESM thirdweb module — see window.TW below)
-$('connectBtn').onclick = async ()=>{
-  if(!window.TW){ alert('Wallet module still loading. Wait a few seconds and retry.'); return; }
-  try{
-    account = await window.TW.connect();
-    $('walletAddr').textContent = account.address;
-    $('walletLine').style.display='block';
-    $('connectBtn').textContent='Connected'; $('connectBtn').disabled=true;
-    loadPositions(account.address.toLowerCase());
-    const fr = $('feeReceiver'); if(fr && !fr.value) fr.placeholder = account.address + ' (default)';
-  }catch(e){ alert('Connect failed: '+(e && e.message || e)); }
-};
+// 2 · connect buttons are bound in the ESM module below (needs thirdweb SDK).
+// This stub only fills the fee-receiver hint once connected.
+function afterConnect(addr){
+  $('walletAddr').textContent = addr;
+  $('walletLine').style.display='block';
+  const cl = $('connLine'); if(cl) cl.innerHTML = 'Bağlantı: <span class="ok">bağlı (' + addr.slice(0,10) + '…)</span>';
+  loadPositions(addr.toLowerCase());
+  const fr = $('feeReceiver'); if(fr && !fr.value) fr.placeholder = addr + ' (default)';
+}
+function afterDisconnect(){
+  const cl = $('connLine'); if(cl) cl.innerHTML = 'Bağlantı: <span class="warn">bağlı değil</span>';
+  $('walletLine').style.display='none';
+}
 
 // 3 · commission slider
 $('feeBps').oninput = e=>{ $('feeVal').textContent = (e.target.value/100).toFixed(e.target.value%100?2:1)+'%'; };
@@ -234,43 +241,74 @@ $('quoteBtn').onclick = async ()=>{
   }catch(e){ $('quoteOut').textContent='Quote failed.'; }
 };
 
-// 6 · ship (honest state: needs per-chain builder config for mainnet)
-$('shipBtn').onclick = ()=>{
-  if(!account){ alert('Connect a wallet first.'); return; }
-  alert('Ship flow: approve + ship will be signed in YOUR wallet.\nMainnet builder config is being finalized — your draft above is saved for one-click execution at launch.');
+// 6 · ship on MAINNET (real funds) via selected studio pair
+$('shipBtn').onclick = async ()=>{
+  const out = $('draftOut'); out.style.display='block';
+  try{
+    if(!window.TW){ out.textContent='Wallet module still loading.'; return; }
+    out.textContent = 'Starting mainnet ship…\n';
+    const lines = await window.TW.shipMainnet();
+    out.textContent += lines.join('\n');
+  }catch(e){ out.textContent += '\nFAILED: ' + (e && e.message || e); }
 };
 
-// 7 · my positions
+// 7 · my positions (with Exit buttons)
 async function loadPositions(maker){
   try{
     const r = await fetch(API+'?filter=active&limit=100');
     const j = await r.json();
     const mine = (j.strategies||[]).filter(s=>s.maker===maker);
-    $('posList').innerHTML = mine.length ? mine.map(s=>
-      `<div class="pairchip"><span><b>${s.pair}</b> <span style="color:var(--dim);font-size:12px">${s.chain} · ${short(s.strategy_hash)}</span></span><span class="tag">${s.status}</span></div>`
+    window.__positions = mine;
+    $('posList').innerHTML = mine.length ? mine.map((s,i)=>
+      `<div class="pairchip"><span><b>${s.pair}</b> <span style="color:var(--dim);font-size:12px">${s.chain} · ${short(s.strategy_hash)} · ${s.status}</span></span><button class="btn ghost" style="padding:6px 14px;font-size:12px" onclick="window.__exitPos(${i})">Exit</button></div>`
     ).join('') : '<p class="note">No active strategies for this address. Ship one from the studio.</p>';
   }catch(e){ $('posList').innerHTML='<p class="note">Failed to load.</p>'; }
 }
+window.__exitPos = async (i)=>{
+  const s = (window.__positions||[])[i]; if(!s) return;
+  if(!confirm(`Exit strategy ${s.pair} on ${s.chain}? This docks + revokes (real transactions).`)) return;
+  try{
+    const tokens = (s.tokens||[]).map(t=>t.token);
+    const lines = await window.TW.exitStrategy(s.chain, s.app, s.strategy_hash, tokens);
+    alert('Exited:\n' + lines.join('\n'));
+    loadPositions(s.maker);
+  }catch(e){ alert('Exit failed: ' + (e && e.message || e)); }
+};
 
 loadPairs();
 </script>
 <script type="module">
 import { createThirdwebClient, getContract, prepareContractCall, sendTransaction, readContract, defineChain } from 'thirdweb';
 import { createWallet, inAppWallet, preAuthenticate } from 'thirdweb/wallets';
-import { baseSepolia } from 'thirdweb/chains';
+import { baseSepolia, base, mainnet as ethMainnet, arbitrum, optimism, polygon } from 'thirdweb/chains';
 import { buildRetailProgram, buildTraits, buildOrderData } from './ai-agent/build-order.js';
+
+const CHAINS = { base, ethereum: ethMainnet, arbitrum, optimism, polygon };
+const AQUA = '0x1111113ccf1426a8e30e2bff5e005d929bf6a90a';
+const ROUTER = '0x111111338c5091e8440b67b168bae16a668ac0de';
+const EXPLORER = { base:'https://basescan.org/tx/', ethereum:'https://etherscan.io/tx/', arbitrum:'https://arbiscan.io/tx/', optimism:'https://optimistic.etherscan.io/tx/', polygon:'https://polygonscan.com/tx/' };
 
 const CLIENT = createThirdwebClient({ clientId: '8806ca8739e711e387da3bfb7c20a3f0' }); // publishable, domain-restricted
 let twAccount = null;
 
-// Extension diagnostics (answers QR-vs-extension in one line)
+// Extension diagnostics: installed (not connected!) vs connection state
 try{
   const hasExt = typeof window !== 'undefined' && !!window.ethereum;
   const el = document.getElementById('extLine');
-  if(el) el.innerHTML = hasExt
-    ? 'Browser wallet detected: <span class="ok">YES</span> — “Connect wallet” will use your extension, no QR.'
-    : 'Browser wallet detected: <span class="warn">NO</span> — install the MetaMask extension, or login with email below (no QR either way if extension exists).';
+  if(el) el.innerHTML = 'Eklenti kurulu: ' + (hasExt ? '<span class="ok">VAR</span> (Desktop ile giriş yap)' : '<span class="warn">YOK</span> (eklenti kur veya e-posta / QR ile giriş yap)');
 }catch(e){}
+
+function trackDisconnect(){
+  try{
+    if(window.ethereum && window.ethereum.on){
+      window.ethereum.on('accountsChanged', (accs)=>{
+        if(!accs || !accs.length){ twAccount = null; account = null; wallet = null; afterDisconnect(); }
+        else if(twAccount && accs[0].toLowerCase() !== twAccount.address.toLowerCase()){ twAccount = null; account = null; wallet = null; afterDisconnect(); alert('Cüzdan hesabı değişti — yeniden bağlan.'); }
+      });
+    }
+  }catch(e){}
+}
+trackDisconnect();
 
 function finishConnect(acc){
   twAccount = acc; wallet = acc; account = acc;
@@ -294,15 +332,20 @@ function log(msg){ const o=$t('trialOut'); o.style.display='block'; o.textConten
 
 window.TW = {
   client: CLIENT,
-  async connect(){
-    const wallets = [createWallet('injected'), createWallet('io.metamask'), createWallet('com.coinbase.wallet')];
-    let lastErr = null;
-    for(const w of wallets){
-      try{ const acc = await w.connect({client: CLIENT}); wallet = w; account = acc; lastErr = null; break; }
-      catch(e){ lastErr = e; }
-    }
-    if(lastErr) throw lastErr;
-    return finishConnect(account);
+  // Desktop: injected extension ONLY — clean error if absent, never QR
+  async connectDesktop(){
+    if(!window.ethereum) throw new Error('Eklenti bulunamadı. MetaMask extension kurulu ve açık olmalı.');
+    const w = createWallet('injected');
+    const acc = await w.connect({client: CLIENT});
+    wallet = w;
+    return finishConnect(acc);
+  },
+  // Mobile: WalletConnect QR modal
+  async connectMobile(){
+    const w = createWallet('walletConnect', { projectId: 'a319eb8a9519ffdab5db0438ae7bc27f' });
+    const acc = await w.connect({client: CLIENT, showQrModal: true});
+    wallet = w;
+    return finishConnect(acc);
   },
   async sendCode(email){
     await preAuthenticate({client: CLIENT, strategy: 'email', email});
@@ -312,9 +355,78 @@ window.TW = {
     const acc = await w.connect({client: CLIENT, strategy: 'email', email, verificationCode: code});
     wallet = w;
     return finishConnect(acc);
+  },
+  // Exit: dock strategy + revoke both allowances (user signs each)
+  async exitStrategy(chainKey, app, strategyHash, tokens){
+    if(!twAccount) throw new Error('Connect first.');
+    const chain = CHAINS[chainKey]; if(!chain) throw new Error('Unsupported chain.');
+    const send = async (to, method, params) => {
+      const contract = getContract({client: CLIENT, chain, address: to});
+      const tx = prepareContractCall({contract, method, params});
+      return sendTransaction({transaction: tx, account: twAccount});
+    };
+    const r1 = await send(AQUA, 'function dock(address,bytes32,address[])', [app, strategyHash, tokens]);
+    const out = [`dock: ${EXPLORER[chainKey]}${r1.transactionHash}`];
+    for(const t of tokens){
+      const r = await send(t, 'function approve(address,uint256) returns (bool)', [AQUA, 0n]);
+      out.push(`revoke ${t.slice(0,10)}…: ${EXPLORER[chainKey]}${r.transactionHash}`);
+    }
+    return out;
+  },
+  // Mainnet ship on the studio-selected pair (REAL FUNDS — confirm gate inside)
+  async shipMainnet(){
+    if(!twAccount) throw new Error('Connect a wallet first.');
+    const sel = (window.__pairs||[])[+document.getElementById('pairSelect').value];
+    if(!sel) throw new Error('Select a pair first.');
+    if(!sel.tokenA || !sel.tokenB) throw new Error('Selected pair has no token addresses (live-only entry). Pick a supported row.');
+    const chain = CHAINS[sel.chain]; if(!chain) throw new Error('Chain not enabled: ' + sel.chain);
+    if(!confirm(`REAL FUNDS on ${sel.chain} — ship ${sel.pair} strategy from your wallet?`)) return ['Cancelled by user.'];
+    const me = twAccount.address;
+    const lines = [`Chain: ${sel.chain} | pair: ${sel.pair} | maker: ${me}`];
+    const erc20bal = 'function balanceOf(address) view returns (uint256)';
+    const dec = 'function decimals() view returns (uint8)';
+    const read = (addr, method, params) => readContract({contract: getContract({client: CLIENT, chain, address: addr}), method, params});
+    const tA = sel.tokenA.toLowerCase() < sel.tokenB.toLowerCase() ? sel.tokenA : sel.tokenB;
+    const tB = tA.toLowerCase() === sel.tokenA.toLowerCase() ? sel.tokenB : sel.tokenA;
+    const [bA, bB, dA, dB] = await Promise.all([read(tA, erc20bal, [me]), read(tB, erc20bal, [me]), read(tA, dec, []).catch(()=>18), read(tB, dec, []).catch(()=>18)]);
+    lines.push(`Balance A: ${bA} (dec ${dA}) | B: ${bB} (dec ${dB})`);
+    const amtA = BigInt(document.getElementById('amtA').value || '0') * (10n ** BigInt(dA));
+    const amtB = BigInt(document.getElementById('amtB').value || '0') * (10n ** BigInt(dB));
+    if(amtA <= 0n || amtB <= 0n) throw new Error('Enter amounts > 0.');
+    if(bA < amtA || bB < amtB) throw new Error('Insufficient token balance.');
+    const feeEl = document.getElementById('feeBps');
+    const feeBps = Math.min(Math.max(+(feeEl ? feeEl.value : 30) || 0, 0), 2000000);
+    const recvEl = document.getElementById('feeReceiver');
+    const receiver = ((recvEl && recvEl.value.trim()) || me);
+    const saltHex = '0x' + BigInt(Date.now()).toString(16).padStart(16,'0') + '0'.repeat(48);
+    const programHex = buildRetailProgram({tokenA: tA, tokenB: tB, x0: amtA, y0: amtB, makerFeeBps: feeBps, feeReceiver: receiver, salt64: BigInt('0x' + saltHex.slice(2, 18))});
+    const dataHex = buildOrderData({tokenA: tA, tokenB: tB, programHex});
+    const orderHex = '0x' + pad32(me) + u256(buildTraits()) + u256(96) + u256((dataHex.length-2)/2) + dataHex.slice(2) + '0'.repeat((64 - ((dataHex.length-2)/2*2 % 64)) % 64);
+    lines.push(`Order: fee ${(feeBps/100000).toFixed(2)}%, ${((programHex.length-2)/2)} program bytes. Sign each step.`);
+    const send = async (to, method, params, label) => {
+      const contract = getContract({client: CLIENT, chain, address: to});
+      const tx = prepareContractCall({contract, method, params});
+      const res = await sendTransaction({transaction: tx, account: twAccount});
+      lines.push(`${label}: ${EXPLORER[sel.chain]}${res.transactionHash}`);
+    };
+    await send(tA, 'function approve(address,uint256) returns (bool)', [AQUA, amtA], 'approve A');
+    await send(tB, 'function approve(address,uint256) returns (bool)', [AQUA, amtB], 'approve B');
+    await send(AQUA, 'function ship(address,bytes,address[],uint256[]) returns (bytes32)', [ROUTER, orderHex, [tA, tB], [amtA, amtB]], 'ship');
+    lines.push('DONE — maker position open. Exit anytime from Positions.');
+    return lines;
   }
 };
 
+document.getElementById('deskBtn').onclick = async ()=>{
+  if(!window.TW){ alert('Cüzdan modülü yükleniyor. Birkaç saniye bekleyip retry.'); return; }
+  try{ const acc = await window.TW.connectDesktop(); afterConnect(acc.address); }
+  catch(e){ alert('Desktop bağlantı: ' + (e && e.message || e)); }
+};
+document.getElementById('mobBtn').onclick = async ()=>{
+  if(!window.TW){ alert('Cüzdan modülü yükleniyor. Birkaç saniye bekleyip retry.'); return; }
+  try{ const acc = await window.TW.connectMobile(); afterConnect(acc.address + ' (mobile)'); }
+  catch(e){ alert('Mobile bağlantı: ' + (e && e.message || e)); }
+};
 document.getElementById('emailSendBtn').onclick = async ()=>{
   const email = (document.getElementById('emailInput').value || '').trim();
   if(!email || !email.includes('@')){ alert('Enter a valid email.'); return; }
@@ -331,8 +443,7 @@ document.getElementById('emailVerifyBtn').onclick = async ()=>{
   if(!code){ alert('Enter the code from your email.'); return; }
   try{
     const acc = await window.TW.verifyCode(email, code);
-    document.getElementById('walletAddr').textContent = acc.address + ' (email wallet)';
-    document.getElementById('walletLine').style.display='block';
+    afterConnect(acc.address);
     alert('Connected: ' + acc.address);
   }catch(e){ alert('Verify failed: ' + (e && e.message || e)); }
 };
