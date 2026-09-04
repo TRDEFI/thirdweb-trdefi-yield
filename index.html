@@ -161,7 +161,28 @@ const KNOWN = [
   {chain:'ethereum', pair:'1INCH/USDT', tokenA:'0x111111111117dc0aa78b770fa6a738034120c302', tokenB:'0xdAC17F958D2ee523a2206206994597C13D831ec7', verified:false},
 ];
 
-// 1 · fetch verified pairs (live scan first, curated list merged below)
+// 0 · Wallet discovery (plain JS, zero dependencies — ALWAYS runs)
+(function(){
+  function found(list){
+    var el = document.getElementById('extLine');
+    if(!el) return;
+    if(list.length) el.innerHTML = 'Extension installed: <span class="ok">YES</span> (' + list.map(function(d){return d.info.name;}).join(', ') + ') — use Desktop login, no QR.';
+    else el.innerHTML = 'Extension installed: <span class="warn">NO</span> (install an extension, or use email / QR login)';
+  }
+  try{
+    var seen = {};
+    window.addEventListener('eip6963:announceProvider', function(e){
+      var d = e && e.detail;
+      if(d && d.info && d.provider && !seen[d.info.uuid]){ seen[d.info.uuid] = d; found(Object.keys(seen).map(function(k){return seen[k];})); }
+    });
+    window.dispatchEvent(new Event('eip6963:requestProvider'));
+    setTimeout(function(){
+      var list = Object.keys(seen).map(function(k){return seen[k];});
+      if(!list.length && window.ethereum) list = [{info:{name:'Browser wallet'}, provider: window.ethereum}];
+      found(list);
+    }, 600);
+  }catch(e){}
+})();
 async function loadPairs(){
   let live = [];
   try{
@@ -278,13 +299,38 @@ window.__exitPos = async (i)=>{
 loadPairs();
 </script>
 <script type="module">
-import { createThirdwebClient, getContract, prepareContractCall, sendTransaction, readContract } from 'thirdweb';
-import { createWallet, inAppWallet, preAuthenticate } from 'thirdweb/wallets';
-import { baseSepolia, base, mainnet as ethMainnet, arbitrum, optimism, polygon } from 'thirdweb/chains';
-import { createWalletClient, createPublicClient, custom, http, parseAbi } from 'https://esm.sh/viem@2.55.19';
 import { buildRetailProgram, buildTraits, buildOrderData } from './ai-agent/build-order.js';
 
-const CHAINS = { base, ethereum: ethMainnet, arbitrum, optimism, polygon };
+// ---- Lazy SDK loading: a failed CDN must NEVER silently kill the page ----
+let CLIENT = null, CHAINS = null, baseSepolia = null;
+let createWallet, inAppWallet, preAuthenticate, getContract, prepareContractCall, sendTransaction;
+let createWalletClient, createPublicClient, custom, httpV, parseAbiFn;
+let ERC20_ABI = null, AQUA_ABI = null;
+let SDK_ERR = '';
+async function ensureViem(){
+  if(createWalletClient) return;
+  try{
+    const V = await import('https://esm.sh/viem@2.55.19');
+    ({ createWalletClient, createPublicClient, custom, http: httpV, parseAbi: parseAbiFn } = V);
+    ERC20_ABI = parseAbiFn(['function approve(address,uint256) returns (bool)', 'function balanceOf(address) view returns (uint256)', 'function decimals() view returns (uint8)']);
+    AQUA_ABI = parseAbiFn(['function ship(address,bytes,address[],uint256[]) returns (bytes32)', 'function dock(address,bytes32,address[])']);
+  }catch(e){ throw new Error('viem failed to load: ' + (e && e.message || e)); }
+}
+async function ensureTW(){
+  if(CLIENT) return;
+  try{
+    const [T, W, CH] = await Promise.all([import('thirdweb'), import('thirdweb/wallets'), import('thirdweb/chains')]);
+    CLIENT = T.createThirdwebClient({ clientId: '8806ca8739e711e387da3bfb7c20a3f0' }); // publishable, domain-restricted
+    ({ createWallet, inAppWallet, preAuthenticate } = W);
+    ({ getContract, prepareContractCall, sendTransaction } = T);
+    CHAINS = { base: CH.base, ethereum: CH.mainnet, arbitrum: CH.arbitrum, optimism: CH.optimism, polygon: CH.polygon };
+    baseSepolia = CH.baseSepolia;
+  }catch(e){ throw new Error('thirdweb failed to load: ' + (e && e.message || e)); }
+}
+// Background preload so clicks are instant; failures surface visibly
+ensureViem().catch(e => { SDK_ERR = e.message; const el = document.getElementById('extLine'); if(el) el.innerHTML += ' <span class="warn">[' + e.message + ']</span>'; });
+ensureTW().catch(e => { const el = document.getElementById('extLine'); if(el) el.innerHTML += ' <span class="warn">[' + e.message + ']</span>'; });
+
 const CHAIN_IDS = { baseSepolia: 84532, base: 8453, ethereum: 1, arbitrum: 42161, optimism: 10, polygon: 137 };
 const VIEM_RPC = {
   84532: 'https://base-sepolia-rpc.publicnode.com', 8453: 'https://mainnet.base.org',
@@ -292,15 +338,6 @@ const VIEM_RPC = {
   10: 'https://mainnet.optimism.io', 137: 'https://polygon.drpc.org',
 };
 const VIEM_NAME = { 84532: 'Base Sepolia', 8453: 'Base', 1: 'Ethereum', 42161: 'Arbitrum', 10: 'Optimism', 137: 'Polygon' };
-const ERC20_ABI = parseAbi(['function approve(address,uint256) returns (bool)', 'function balanceOf(address) view returns (uint256)', 'function decimals() view returns (uint8)']);
-const AQUA_ABI = parseAbi(['function ship(address,bytes,address[],uint256[]) returns (bytes32)', 'function dock(address,bytes32,address[])']);
-
-const CHAINS = { base, ethereum: ethMainnet, arbitrum, optimism, polygon };
-const AQUA = '0x1111113ccf1426a8e30e2bff5e005d929bf6a90a';
-const ROUTER = '0x111111338c5091e8440b67b168bae16a668ac0de';
-const EXPLORER = { base:'https://basescan.org/tx/', ethereum:'https://etherscan.io/tx/', arbitrum:'https://arbiscan.io/tx/', optimism:'https://optimistic.etherscan.io/tx/', polygon:'https://polygonscan.com/tx/' };
-
-const CLIENT = createThirdwebClient({ clientId: '8806ca8739e711e387da3bfb7c20a3f0' }); // publishable, domain-restricted
 let twAccount = null;
 let MODE = null; // 'native' (EIP-6963 + viem, no vendor) | 'tw' (thirdweb email/mobile)
 let NAT = null;  // { provider, address }
@@ -332,7 +369,7 @@ function vchain(chainId){
     rpcUrls: { default: { http: [VIEM_RPC[chainId]] } } };
 }
 function pubClient(chainId){
-  return createPublicClient({ chain: vchain(chainId), transport: http(VIEM_RPC[chainId]) });
+  return createPublicClient({ chain: vchain(chainId), transport: httpV(VIEM_RPC[chainId]) });
 }
 async function ensureChain(provider, chainId){
   const cur = await provider.request({ method: 'eth_chainId' }).catch(()=>null);
@@ -417,6 +454,7 @@ window.TW = {
   // Desktop: NATIVE path — EIP-6963 discovery + direct eth_requestAccounts.
   // No thirdweb wallet layer involved, so no QR can appear. Ever.
   async connectDesktop(){
+    await ensureViem();
     const list = await discoverProviders(600);
     if(!list.length) throw new Error('No extension found. Install and unlock MetaMask (or Rabby/Zerion/Coinbase), then retry.');
     const pref = list.find(d => (d.info.rdns||'').toLowerCase() === 'io.metamask') || list[0];
@@ -440,6 +478,7 @@ window.TW = {
   },
   // Mobile: WalletConnect QR modal
   async connectMobile(){
+    await ensureTW();
     const w = createWallet('walletConnect', { projectId: 'a319eb8a9519ffdab5db0438ae7bc27f' });
     const acc = await w.connect({client: CLIENT, showQrModal: true});
     wallet = w;
@@ -447,9 +486,11 @@ window.TW = {
     return finishConnect(acc);
   },
   async sendCode(email){
+    await ensureTW();
     await preAuthenticate({client: CLIENT, strategy: 'email', email});
   },
   async verifyCode(email, code){
+    await ensureTW();
     const w = inAppWallet();
     const acc = await w.connect({client: CLIENT, strategy: 'email', email, verificationCode: code});
     wallet = w;
@@ -459,6 +500,8 @@ window.TW = {
   // Exit: dock strategy + revoke both allowances (user signs each)
   async exitStrategy(chainKey, app, strategyHash, tokens){
     if(!twAccount && !NAT) throw new Error('Connect first.');
+    await ensureViem();
+    if(MODE === 'tw') await ensureTW();
     const chainId = CHAIN_IDS[chainKey]; if(!chainId) throw new Error('Unsupported chain.');
     const me = (NAT && NAT.address) || twAccount.address;
     const send = async (to, abi, fn, args) => uwrite(chainId, to, abi, fn, args);
@@ -473,6 +516,8 @@ window.TW = {
   // Mainnet ship on the studio-selected pair (REAL FUNDS — confirm gate inside)
   async shipMainnet(){
     if(!twAccount && !NAT) throw new Error('Connect a wallet first.');
+    await ensureViem();
+    if(MODE === 'tw') await ensureTW();
     const sel = (window.__pairs||[])[+document.getElementById('pairSelect').value];
     if(!sel) throw new Error('Select a pair first.');
     if(!sel.tokenA || !sel.tokenB) throw new Error('Selected pair has no token addresses (live-only entry). Pick a supported row.');
@@ -544,6 +589,8 @@ $t('trialBtn').onclick = async ()=>{
   $t('trialOut').style.display='block'; $t('trialOut').textContent='';
   try{
     if(!twAccount && !NAT){ log('Connect a wallet first (top button).'); return; }
+    try{ await ensureViem(); if(MODE === 'tw') await ensureTW(); }
+    catch(e){ log('SDK load failed: ' + (e && e.message || e)); return; }
     const chainId = 84532;
     const me = (NAT && NAT.address) || twAccount.address;
     log('Wallet: '+me+' (via '+(MODE||'?')+')');
