@@ -278,10 +278,22 @@ window.__exitPos = async (i)=>{
 loadPairs();
 </script>
 <script type="module">
-import { createThirdwebClient, getContract, prepareContractCall, sendTransaction, readContract, defineChain } from 'thirdweb';
+import { createThirdwebClient, getContract, prepareContractCall, sendTransaction, readContract } from 'thirdweb';
 import { createWallet, inAppWallet, preAuthenticate } from 'thirdweb/wallets';
 import { baseSepolia, base, mainnet as ethMainnet, arbitrum, optimism, polygon } from 'thirdweb/chains';
+import { createWalletClient, createPublicClient, custom, http, parseAbi } from 'https://esm.sh/viem@2.55.19';
 import { buildRetailProgram, buildTraits, buildOrderData } from './ai-agent/build-order.js';
+
+const CHAINS = { base, ethereum: ethMainnet, arbitrum, optimism, polygon };
+const CHAIN_IDS = { baseSepolia: 84532, base: 8453, ethereum: 1, arbitrum: 42161, optimism: 10, polygon: 137 };
+const VIEM_RPC = {
+  84532: 'https://base-sepolia-rpc.publicnode.com', 8453: 'https://mainnet.base.org',
+  1: 'https://ethereum-rpc.publicnode.com', 42161: 'https://arb1.arbitrum.io/rpc',
+  10: 'https://mainnet.optimism.io', 137: 'https://polygon.drpc.org',
+};
+const VIEM_NAME = { 84532: 'Base Sepolia', 8453: 'Base', 1: 'Ethereum', 42161: 'Arbitrum', 10: 'Optimism', 137: 'Polygon' };
+const ERC20_ABI = parseAbi(['function approve(address,uint256) returns (bool)', 'function balanceOf(address) view returns (uint256)', 'function decimals() view returns (uint8)']);
+const AQUA_ABI = parseAbi(['function ship(address,bytes,address[],uint256[]) returns (bytes32)', 'function dock(address,bytes32,address[])']);
 
 const CHAINS = { base, ethereum: ethMainnet, arbitrum, optimism, polygon };
 const AQUA = '0x1111113ccf1426a8e30e2bff5e005d929bf6a90a';
@@ -290,12 +302,82 @@ const EXPLORER = { base:'https://basescan.org/tx/', ethereum:'https://etherscan.
 
 const CLIENT = createThirdwebClient({ clientId: '8806ca8739e711e387da3bfb7c20a3f0' }); // publishable, domain-restricted
 let twAccount = null;
+let MODE = null; // 'native' (EIP-6963 + viem, no vendor) | 'tw' (thirdweb email/mobile)
+let NAT = null;  // { provider, address }
 
-// Extension diagnostics: installed (not connected!) vs connection state
+// ---- Native wallet layer (free bridge: EIP-6963 discovery + viem, no QR, no vendor) ----
+function discoverProviders(timeoutMs = 500){
+  return new Promise(resolve => {
+    const found = new Map();
+    const onAnnounce = (e) => {
+      const d = e && e.detail;
+      if(d && d.info && d.provider && !found.has(d.info.uuid)) found.set(d.info.uuid, d);
+    };
+    try{
+      window.addEventListener('eip6963:announceProvider', onAnnounce);
+      window.dispatchEvent(new Event('eip6963:requestProvider'));
+    }catch(e){}
+    setTimeout(() => {
+      try{ window.removeEventListener('eip6963:announceProvider', onAnnounce); }catch(e){}
+      if(found.size === 0 && window.ethereum){
+        found.set('legacy', { info: { name: 'Browser wallet', rdns: 'legacy' }, provider: window.ethereum });
+      }
+      resolve([...found.values()]);
+    }, timeoutMs);
+  });
+}
+function vchain(chainId){
+  return { id: chainId, name: VIEM_NAME[chainId] || ('Chain ' + chainId),
+    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+    rpcUrls: { default: { http: [VIEM_RPC[chainId]] } } };
+}
+function pubClient(chainId){
+  return createPublicClient({ chain: vchain(chainId), transport: http(VIEM_RPC[chainId]) });
+}
+async function ensureChain(provider, chainId){
+  const cur = await provider.request({ method: 'eth_chainId' }).catch(()=>null);
+  if(cur && BigInt(cur) === BigInt(chainId)) return;
+  try{
+    await provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x' + BigInt(chainId).toString(16) }] });
+  }catch(e){
+    if(e && (e.code === 4902 || (e.message||'').includes('4902'))){
+      await provider.request({ method: 'wallet_addEthereumChain', params: [{
+        chainId: '0x' + BigInt(chainId).toString(16), chainName: VIEM_NAME[chainId],
+        nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, rpcUrls: [VIEM_RPC[chainId]],
+      }]});
+    } else throw e;
+  }
+}
+// Unified read: always via public RPC (costs us nothing, no thirdweb quota)
+function uread(chainId, to, abi, fn, args){
+  return pubClient(chainId).readContract({ address: to, abi, functionName: fn, args });
+}
+// Unified write: native viem OR thirdweb account depending on connection mode
+async function uwrite(keyOrId, to, abi, fn, args){
+  const chainId = typeof keyOrId === 'number' ? keyOrId : CHAIN_IDS[keyOrId];
+  if(MODE === 'native'){
+    await ensureChain(NAT.provider, chainId);
+    const wc = createWalletClient({ chain: vchain(chainId), transport: custom(NAT.provider) });
+    const hash = await wc.writeContract({ address: to, abi, functionName: fn, args, account: NAT.address, chain: vchain(chainId) });
+    await pubClient(chainId).waitForTransactionReceipt({ hash });
+    return { transactionHash: hash };
+  }
+  const key = typeof keyOrId === 'number' ? Object.keys(CHAIN_IDS).find(k => CHAIN_IDS[k] === keyOrId) : keyOrId;
+  const contract = getContract({ client: CLIENT, chain: key === 'baseSepolia' ? baseSepolia : CHAINS[key], address: to });
+  const tx = prepareContractCall({ contract, method: fn === 'ship' ? 'function ship(address,bytes,address[],uint256[]) returns (bytes32)'
+    : fn === 'dock' ? 'function dock(address,bytes32,address[])'
+    : 'function approve(address,uint256) returns (bool)', params: args });
+  return sendTransaction({ transaction: tx, account: twAccount });
+}
+
+// Extension diagnostics: EIP-6963 discovery (names, not just YES/NO)
 try{
-  const hasExt = typeof window !== 'undefined' && !!window.ethereum;
-  const el = document.getElementById('extLine');
-  if(el) el.innerHTML = 'Extension installed: ' + (hasExt ? '<span class="ok">YES</span> (use Desktop login)' : '<span class="warn">NO</span> (install an extension, or use email / QR login)');
+  discoverProviders(600).then(list => {
+    const el = document.getElementById('extLine');
+    if(!el) return;
+    if(list.length) el.innerHTML = 'Extension installed: <span class="ok">YES</span> (' + list.map(d => d.info.name).join(', ') + ') — use Desktop login, no QR.';
+    else el.innerHTML = 'Extension installed: <span class="warn">NO</span> (install an extension, or use email / QR login)';
+  });
 }catch(e){}
 
 function trackDisconnect(){
@@ -332,29 +414,36 @@ function log(msg){ const o=$t('trialOut'); o.style.display='block'; o.textConten
 
 window.TW = {
   client: CLIENT,
-  // Desktop: extension wallets ONLY (never QR). 'injected' is not a valid
-  // thirdweb v5 wallet id — try known extension ids in order.
+  // Desktop: NATIVE path — EIP-6963 discovery + direct eth_requestAccounts.
+  // No thirdweb wallet layer involved, so no QR can appear. Ever.
   async connectDesktop(){
-    if(!window.ethereum) throw new Error('No extension found. Install and unlock MetaMask (or another extension wallet), then retry.');
-    const ids = ['io.metamask', 'com.coinbase.wallet', 'me.rainbow', 'io.zerion.wallet', 'com.trustwallet.app'];
-    let lastErr = null;
-    for(const id of ids){
-      try{
-        const w = createWallet(id);
-        const acc = await w.connect({client: CLIENT});
-        // Guard: if it fell back to QR/WC instead of the extension, keep trying
-        if(!window.ethereum){ continue; }
-        wallet = w;
-        return finishConnect(acc);
-      }catch(e){ lastErr = e; }
-    }
-    throw lastErr || new Error('Extension found but connection was rejected.');
+    const list = await discoverProviders(600);
+    if(!list.length) throw new Error('No extension found. Install and unlock MetaMask (or Rabby/Zerion/Coinbase), then retry.');
+    const pref = list.find(d => (d.info.rdns||'').toLowerCase() === 'io.metamask') || list[0];
+    const provider = pref.provider;
+    const accs = await provider.request({ method: 'eth_requestAccounts' });
+    if(!accs || !accs.length) throw new Error('Connection rejected in wallet.');
+    NAT = { provider, address: accs[0] };
+    MODE = 'native';
+    try{
+      provider.on && provider.on('accountsChanged', (a) => {
+        if(!a || !a.length || a[0].toLowerCase() !== NAT.address.toLowerCase()){
+          NAT = null; MODE = null; twAccount = null; account = null; wallet = null; afterDisconnect();
+        }
+      });
+      provider.on && provider.on('disconnect', () => { NAT = null; MODE = null; twAccount = null; account = null; wallet = null; afterDisconnect(); });
+    }catch(e){}
+    wallet = { address: accs[0] };
+    const acc = { address: accs[0] };
+    try{ const el = document.getElementById('extLine'); if(el) el.innerHTML += ` — using <b>${pref.info.name}</b>`; }catch(e){}
+    return finishConnect(acc);
   },
   // Mobile: WalletConnect QR modal
   async connectMobile(){
     const w = createWallet('walletConnect', { projectId: 'a319eb8a9519ffdab5db0438ae7bc27f' });
     const acc = await w.connect({client: CLIENT, showQrModal: true});
     wallet = w;
+    MODE = 'tw';
     return finishConnect(acc);
   },
   async sendCode(email){
@@ -364,41 +453,36 @@ window.TW = {
     const w = inAppWallet();
     const acc = await w.connect({client: CLIENT, strategy: 'email', email, verificationCode: code});
     wallet = w;
+    MODE = 'tw';
     return finishConnect(acc);
   },
   // Exit: dock strategy + revoke both allowances (user signs each)
   async exitStrategy(chainKey, app, strategyHash, tokens){
-    if(!twAccount) throw new Error('Connect first.');
-    const chain = CHAINS[chainKey]; if(!chain) throw new Error('Unsupported chain.');
-    const send = async (to, method, params) => {
-      const contract = getContract({client: CLIENT, chain, address: to});
-      const tx = prepareContractCall({contract, method, params});
-      return sendTransaction({transaction: tx, account: twAccount});
-    };
-    const r1 = await send(AQUA, 'function dock(address,bytes32,address[])', [app, strategyHash, tokens]);
+    if(!twAccount && !NAT) throw new Error('Connect first.');
+    const chainId = CHAIN_IDS[chainKey]; if(!chainId) throw new Error('Unsupported chain.');
+    const me = (NAT && NAT.address) || twAccount.address;
+    const send = async (to, abi, fn, args) => uwrite(chainId, to, abi, fn, args);
+    const r1 = await send(AQUA, AQUA_ABI, 'dock', [app, strategyHash, tokens]);
     const out = [`dock: ${EXPLORER[chainKey]}${r1.transactionHash}`];
     for(const t of tokens){
-      const r = await send(t, 'function approve(address,uint256) returns (bool)', [AQUA, 0n]);
+      const r = await send(t, ERC20_ABI, 'approve', [AQUA, 0n]);
       out.push(`revoke ${t.slice(0,10)}…: ${EXPLORER[chainKey]}${r.transactionHash}`);
     }
     return out;
   },
   // Mainnet ship on the studio-selected pair (REAL FUNDS — confirm gate inside)
   async shipMainnet(){
-    if(!twAccount) throw new Error('Connect a wallet first.');
+    if(!twAccount && !NAT) throw new Error('Connect a wallet first.');
     const sel = (window.__pairs||[])[+document.getElementById('pairSelect').value];
     if(!sel) throw new Error('Select a pair first.');
     if(!sel.tokenA || !sel.tokenB) throw new Error('Selected pair has no token addresses (live-only entry). Pick a supported row.');
-    const chain = CHAINS[sel.chain]; if(!chain) throw new Error('Chain not enabled: ' + sel.chain);
+    const chainId = CHAIN_IDS[sel.chain]; if(!chainId) throw new Error('Chain not enabled: ' + sel.chain);
     if(!confirm(`REAL FUNDS on ${sel.chain} — ship ${sel.pair} strategy from your wallet?`)) return ['Cancelled by user.'];
-    const me = twAccount.address;
-    const lines = [`Chain: ${sel.chain} | pair: ${sel.pair} | maker: ${me}`];
-    const erc20bal = 'function balanceOf(address) view returns (uint256)';
-    const dec = 'function decimals() view returns (uint8)';
-    const read = (addr, method, params) => readContract({contract: getContract({client: CLIENT, chain, address: addr}), method, params});
+    const me = (NAT && NAT.address) || twAccount.address;
+    const lines = [`Chain: ${sel.chain} | pair: ${sel.pair} | maker: ${me} | via: ${MODE}`];
     const tA = sel.tokenA.toLowerCase() < sel.tokenB.toLowerCase() ? sel.tokenA : sel.tokenB;
     const tB = tA.toLowerCase() === sel.tokenA.toLowerCase() ? sel.tokenB : sel.tokenA;
-    const [bA, bB, dA, dB] = await Promise.all([read(tA, erc20bal, [me]), read(tB, erc20bal, [me]), read(tA, dec, []).catch(()=>18), read(tB, dec, []).catch(()=>18)]);
+    const [bA, bB, dA, dB] = await Promise.all([uread(chainId, tA, ERC20_ABI, 'balanceOf', [me]), uread(chainId, tB, ERC20_ABI, 'balanceOf', [me]), uread(chainId, tA, ERC20_ABI, 'decimals', []).catch(()=>18), uread(chainId, tB, ERC20_ABI, 'decimals', []).catch(()=>18)]);
     lines.push(`Balance A: ${bA} (dec ${dA}) | B: ${bB} (dec ${dB})`);
     const amtA = BigInt(document.getElementById('amtA').value || '0') * (10n ** BigInt(dA));
     const amtB = BigInt(document.getElementById('amtB').value || '0') * (10n ** BigInt(dB));
@@ -413,15 +497,13 @@ window.TW = {
     const dataHex = buildOrderData({tokenA: tA, tokenB: tB, programHex});
     const orderHex = '0x' + pad32(me) + u256(buildTraits()) + u256(96) + u256((dataHex.length-2)/2) + dataHex.slice(2) + '0'.repeat((64 - ((dataHex.length-2)/2*2 % 64)) % 64);
     lines.push(`Order: fee ${(feeBps/100000).toFixed(2)}%, ${((programHex.length-2)/2)} program bytes. Sign each step.`);
-    const send = async (to, method, params, label) => {
-      const contract = getContract({client: CLIENT, chain, address: to});
-      const tx = prepareContractCall({contract, method, params});
-      const res = await sendTransaction({transaction: tx, account: twAccount});
+    const send = async (to, abi, fn, args, label) => {
+      const res = await uwrite(chainId, to, abi, fn, args);
       lines.push(`${label}: ${EXPLORER[sel.chain]}${res.transactionHash}`);
     };
-    await send(tA, 'function approve(address,uint256) returns (bool)', [AQUA, amtA], 'approve A');
-    await send(tB, 'function approve(address,uint256) returns (bool)', [AQUA, amtB], 'approve B');
-    await send(AQUA, 'function ship(address,bytes,address[],uint256[]) returns (bytes32)', [ROUTER, orderHex, [tA, tB], [amtA, amtB]], 'ship');
+    await send(tA, ERC20_ABI, 'approve', [AQUA, amtA], 'approve A');
+    await send(tB, ERC20_ABI, 'approve', [AQUA, amtB], 'approve B');
+    await send(AQUA, AQUA_ABI, 'ship', [ROUTER, orderHex, [tA, tB], [amtA, amtB]], 'ship');
     lines.push('DONE — maker position open. Exit anytime from Positions.');
     return lines;
   }
@@ -461,19 +543,18 @@ document.getElementById('emailVerifyBtn').onclick = async ()=>{
 $t('trialBtn').onclick = async ()=>{
   $t('trialOut').style.display='block'; $t('trialOut').textContent='';
   try{
-    if(!twAccount){ log('Connect a wallet first (top button).'); return; }
-    const chain = baseSepolia;
-    const me = twAccount.address;
-    log('Wallet: '+me);
+    if(!twAccount && !NAT){ log('Connect a wallet first (top button).'); return; }
+    const chainId = 84532;
+    const me = (NAT && NAT.address) || twAccount.address;
+    log('Wallet: '+me+' (via '+(MODE||'?')+')');
     const erc20bal = 'function balanceOf(address) view returns (uint256)';
     const dec = 'function decimals() view returns (uint8)';
     const rpcBal = await fetch('https://base-sepolia-rpc.publicnode.com',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_getBalance',params:[me,'latest']})}).then(r=>r.json()).then(j=>BigInt(j.result)).catch(()=>0n);
-    const read = (addr, method, params) => readContract({contract: getContract({client: CLIENT, chain, address: addr}), method, params});
     const [usdcBal, dusdtBal, usdcDec, dusdtDec] = await Promise.all([
-      read(SEP.usdc, erc20bal, [me]),
-      read(SEP.dusdt, erc20bal, [me]),
-      read(SEP.usdc, dec, []).catch(()=>6),
-      read(SEP.dusdt, dec, []).catch(()=>18),
+      uread(chainId, SEP.usdc, ERC20_ABI, 'balanceOf', [me]),
+      uread(chainId, SEP.dusdt, ERC20_ABI, 'balanceOf', [me]),
+      uread(chainId, SEP.usdc, ERC20_ABI, 'decimals', []).catch(()=>6),
+      uread(chainId, SEP.dusdt, ERC20_ABI, 'decimals', []).catch(()=>18),
     ]);
     log(`USDC: ${usdcBal} (dec ${usdcDec}) | dUSDT: ${dusdtBal} (dec ${dusdtDec}) | ETH: ${rpcBal}`);
     if(rpcBal === 0n){ log('No Sepolia ETH for gas — get faucet ETH first.'); return; }
@@ -493,16 +574,14 @@ $t('trialBtn').onclick = async ()=>{
     const dataHex = buildOrderData({tokenA, tokenB, programHex});
     const orderHex = '0x' + pad32(me) + u256(traits) + u256(96) + u256((dataHex.length-2)/2) + dataHex.slice(2) + '0'.repeat((64 - ((dataHex.length-2)/2*2 % 64)) % 64);
     log(`Order ready: pair sorted, fee ${(feeBps/100000).toFixed(2)}%, ${((programHex.length-2)/2)} program bytes.`);
-    const send = async (to, method, params, label) => {
-      const contract = getContract({client: CLIENT, chain, address: to});
-      const tx = prepareContractCall({contract, method, params});
-      const res = await sendTransaction({transaction: tx, account: twAccount});
+    const send = async (to, abi, fn, args, label) => {
+      const res = await uwrite(chainId, to, abi, fn, args);
       log(`${label}: ${SEP.explorer}${res.transactionHash}`);
       return res;
     };
-    await send(tokenA, 'function approve(address,uint256) returns (bool)', [SEP.aqua, balA], 'approve A');
-    await send(tokenB, 'function approve(address,uint256) returns (bool)', [SEP.aqua, balB], 'approve B');
-    await send(SEP.aqua, 'function ship(address,bytes,address[],uint256[]) returns (bytes32)', [SEP.router, orderHex, [tokenA, tokenB], [balA, balB]], 'ship');
+    await send(tokenA, ERC20_ABI, 'approve', [SEP.aqua, balA], 'approve A');
+    await send(tokenB, ERC20_ABI, 'approve', [SEP.aqua, balB], 'approve B');
+    await send(SEP.aqua, AQUA_ABI, 'ship', [SEP.router, orderHex, [tokenA, tokenB], [balA, balB]], 'ship');
     log('DONE — strategy shipped on Sepolia. Verify on explorer, then dock + revoke to exit.');
   }catch(e){ log('FAILED: ' + (e && e.message || e)); }
 };
