@@ -111,8 +111,8 @@ footer a{color:var(--gold);text-decoration:none}
   </div>
 
   <div class="card" id="positions">
-    <h2>3 · My positions &amp; Revoke</h2>
-    <div class="sub">Connect to list strategies owned by your address. Exit = dock + revoke allowance, one transaction.</div>
+    <h2>3 · My Dashboard — positions &amp; Revoke <button class="btn ghost" style="padding:4px 12px;font-size:11px;margin-left:8px" onclick="if(window.__twAddr&&window.__scanDashboard)window.__scanDashboard(window.__twAddr.toLowerCase())">↻ Rescan</button></h2>
+    <div class="sub">TESTNET and MAINNET sections are clearly separated. Exit = dock + revoke allowance. Fee totals coming later — explorer links for now.</div>
     <div id="posList"><p class="note">Connect a wallet to see your positions.</p></div>
   </div>
 
@@ -224,6 +224,7 @@ async function loadPairs(){
 // 2 · connect buttons are bound in the ESM module below (needs thirdweb SDK).
 // This stub only fills the fee-receiver hint once connected.
 function afterConnect(addr){
+  window.__twAddr = addr;
   $('walletAddr').textContent = addr;
   $('walletLine').style.display='block';
   const cl = $('connLine'); if(cl) cl.innerHTML = 'Connection: <span class="ok">connected (' + addr.slice(0,10) + '…)</span>';
@@ -277,17 +278,10 @@ $('shipBtn').onclick = async ()=>{
   }catch(e){ out.textContent += '\nFAILED: ' + (e && e.message || e); }
 };
 
-// 7 · my positions (with Exit buttons)
+// 7 · dashboard positions (on-chain scan, TESTNET + MAINNET sections)
 async function loadPositions(maker){
-  try{
-    const r = await fetch(API+'?filter=active&limit=100');
-    const j = await r.json();
-    const mine = (j.strategies||[]).filter(s=>s.maker===maker);
-    window.__positions = mine;
-    $('posList').innerHTML = mine.length ? mine.map((s,i)=>
-      `<div class="pairchip"><span><b>${s.pair}</b> <span style="color:var(--dim);font-size:12px">${s.chain} · ${short(s.strategy_hash)} · ${s.status}</span></span><button class="btn ghost" style="padding:6px 14px;font-size:12px" onclick="window.__exitPos(${i})">Exit</button></div>`
-    ).join('') : '<p class="note">No active strategies for this address. Ship one from the studio.</p>';
-  }catch(e){ $('posList').innerHTML='<p class="note">Failed to load.</p>'; }
+  if(window.__scanDashboard) return window.__scanDashboard(maker);
+  document.getElementById('posList').innerHTML = '<p class="note">Loading…</p>';
 }
 window.__exitPos = async (i)=>{
   const s = (window.__positions||[])[i]; if(!s) return;
@@ -609,6 +603,144 @@ document.getElementById('emailVerifyBtn').onclick = async ()=>{
     afterConnect(acc.address);
     alert('Connected: ' + acc.address);
   }catch(e){ alert('Verify failed: ' + (e && e.message || e)); }
+};
+
+// ---- Unified dashboard: on-chain positions via event scan (no backend, no DB) ----
+const DASH_CHAINS = [
+  { key: 'baseSepolia', id: 84532, aqua: SEP.aqua, section: 'TESTNET' },
+  { key: 'base', id: 8453, aqua: AQUA, section: 'MAINNET' },
+  { key: 'ethereum', id: 1, aqua: AQUA, section: 'MAINNET' },
+  { key: 'arbitrum', id: 42161, aqua: AQUA, section: 'MAINNET' },
+  { key: 'optimism', id: 10, aqua: AQUA, section: 'MAINNET' },
+  { key: 'polygon', id: 137, aqua: AQUA, section: 'MAINNET' },
+];
+const SYM = {
+  '0x036cbd53842c5426634e7929541ec2318f3dcf7e': 'USDC', '0xa1b5da715e26418458e7639de17a99984094d210': 'dUSDT',
+  '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 'USDC', '0xdac17f958d2ee523a2206206994597c13d831ec7': 'USDT',
+  '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': 'USDC', '0xfde4c96c8593536e31f229ea8f37b2ada2699bb2': 'USDT',
+  '0xaf88d065e77c8cc2239327c5edb3a432268e5831': 'USDC', '0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb': 'USDT',
+  '0x0b2c639c533813f4aa9d7837caf62653d097ff85': 'USDC', '0x94b008aa00579c1307b0ef2c499ad98a8ce58e58': 'USDT',
+  '0x3c499c542cef5e3811e1192ce70dc0c03d5c3359': 'USDC', '0xc2132d05d31c914a87c6611c10748aeb04b58e8f': 'USDT',
+  '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': 'WETH', '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599': 'WBTC',
+  '0x111111111117dc0aa78b770fa6a738034120c302': '1INCH',
+  '0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0': 'wstETH', '0xae7ab96520de3a18e5e111b5eaab095312d7fe84': 'stETH',
+};
+const symOrShort = a => SYM[a.toLowerCase()] || (a.slice(0, 6) + '…' + a.slice(-4));
+const escH = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+async function rpcCall(rpc, method, params){
+  const r = await fetch(rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+  const j = await r.json();
+  if(j.error) throw new Error(j.error.message || (method + ' failed'));
+  return j.result;
+}
+// ship tx calldata -> tokens[] (router, order, tokens[], amounts[])
+async function shipTokens(rpc, txHash){
+  const tx = await rpcCall(rpc, 'eth_getTransactionByHash', [txHash]);
+  if(!tx || !tx.input) return [];
+  const h = tx.input.slice(2);
+  const toksOff = parseInt(h.slice(128, 192), 16) * 2;
+  const len = parseInt(h.slice(toksOff, toksOff + 64), 16);
+  const out = [];
+  for(let i = 0; i < len && i < 8; i++) out.push('0x' + h.slice(toksOff + 64 + i * 64 + 24, toksOff + 64 + (i + 1) * 64));
+  return out;
+}
+window.__scanDashboard = async function(maker){
+  const box = document.getElementById('posList');
+  box.innerHTML = '<p class="note">Scanning Sepolia + 5 mainnets for your strategies…</p>';
+  try{
+    await ensureViem();
+    if(MODE === 'tw') await ensureTW();
+    const V = await import('https://esm.sh/viem@2.55.19');
+    let shipTopic, dockTopic;
+    try{
+      shipTopic = V.getEventSelector(V.parseAbiItem('event Shipped(address indexed maker, address indexed app, bytes32 indexed strategyHash, bytes strategy)'));
+      dockTopic = V.getEventSelector(V.parseAbiItem('event Docked(address indexed maker, address indexed app, bytes32 indexed strategyHash)'));
+    }catch(e){
+      const enc = new TextEncoder();
+      shipTopic = V.keccak256(enc.encode('Shipped(address,address,bytes32,bytes)'));
+      dockTopic = V.keccak256(enc.encode('Docked(address,address,bytes32)'));
+    }
+    const DEPTH = 100000n, CHUNK = 50000n;
+    const makerT = '0x' + '0'.repeat(24) + maker.slice(2).toLowerCase();
+    const perChain = [];
+    for(const cfg of DASH_CHAINS){
+      try{
+        const latest = BigInt(await rpcCall(VIEM_RPC[cfg.id], 'eth_blockNumber', []));
+        const from0 = latest > DEPTH ? latest - DEPTH : 0n;
+        const hex = n => '0x' + n.toString(16);
+        const shipped = [], docked = [];
+        for(let from = from0; from <= latest; from += CHUNK){
+          const to = from + CHUNK - 1n > latest ? latest : from + CHUNK - 1n;
+          const [s, d] = await Promise.all([
+            rpcCall(VIEM_RPC[cfg.id], 'eth_getLogs', [{ address: cfg.aqua, topics: [shipTopic, makerT], fromBlock: hex(from), toBlock: hex(to) }]).catch(() => []),
+            rpcCall(VIEM_RPC[cfg.id], 'eth_getLogs', [{ address: cfg.aqua, topics: [dockTopic, makerT], fromBlock: hex(from), toBlock: hex(to) }]).catch(() => []),
+          ]);
+          shipped.push(...s); docked.push(...d);
+        }
+        const byKey = new Map();
+        for(const l of shipped){
+          const app = '0x' + l.topics[2].slice(-40), hash = l.topics[3];
+          const k = app.toLowerCase() + hash.toLowerCase();
+          const e = byKey.get(k) || { app, hash, shipBlock: 0n, shipTx: null, dockBlock: null };
+          const b = BigInt(l.blockNumber);
+          if(b >= e.shipBlock){ e.shipBlock = b; e.shipTx = l.transactionHash; }
+          byKey.set(k, e);
+        }
+        for(const l of docked){
+          const app = '0x' + l.topics[2].slice(-40), hash = l.topics[3];
+          const k = app.toLowerCase() + hash.toLowerCase();
+          const e = byKey.get(k) || { app, hash, shipBlock: 0n, shipTx: null, dockBlock: null };
+          const b = BigInt(l.blockNumber);
+          if(!e.dockBlock || b > e.dockBlock) e.dockBlock = b;
+          byKey.set(k, e);
+        }
+        const items = [];
+        for(const e of byKey.values()){
+          const active = !!e.shipTx && (!e.dockBlock || e.shipBlock >= e.dockBlock);
+          let tokens = [];
+          if(e.shipTx){ try{ tokens = await shipTokens(VIEM_RPC[cfg.id], e.shipTx); }catch(err){} }
+          items.push({ ...e, chainKey: cfg.key, id: cfg.id, active, tokens });
+        }
+        perChain.push({ cfg, items });
+      }catch(err){ perChain.push({ cfg, items: [], error: String((err && err.message) || err) }); }
+    }
+    const flat = [];
+    perChain.forEach((c, ci) => c.items.forEach((it, ii) => flat.push({ ...it, ci, ii })));
+    window.__dashFlat = flat;
+    const expRoot = k => EXPLORER[k].replace('/tx/', '/');
+    let html = '';
+    for(const sec of ['TESTNET', 'MAINNET']){
+      const chains = perChain.filter(c => c.cfg.section === sec);
+      const n = chains.reduce((a, c) => a + c.items.length, 0);
+      html += `<p class="note" style="margin:14px 0 6px"><strong>${sec}</strong> — ${n} position${n === 1 ? '' : 's'}</p>`;
+      for(const c of chains){
+        if(c.error){ html += `<p class="note">${c.cfg.key}: scan failed (${escH(c.error)})</p>`; continue; }
+        for(const it of c.items){
+          const g = flat.findIndex(f => f.ci === perChain.indexOf(c) && f.hash === it.hash && f.app === it.app);
+          const pair = it.tokens.length ? it.tokens.map(symOrShort).join(' / ') : 'tokens resolve after first fill';
+          const status = it.active ? '<span class="tag">active</span>' : '<span class="tag" style="color:var(--dim)">closed</span>';
+          const links = `<a href="${expRoot(c.cfg.key)}tx/${it.shipTx}" target="_blank" rel="noopener" style="color:var(--gold)">ship tx</a>` +
+            ` · <a href="${expRoot(c.cfg.key)}address/${it.app}" target="_blank" rel="noopener" style="color:var(--gold)">app</a>`;
+          const exit = (it.active && it.tokens.length)
+            ? `<button class="btn ghost" style="padding:6px 14px;font-size:12px" onclick="window.__exitDash(${g})">Exit</button>` : '';
+          html += `<div class="pairchip"><span><b>${pair}</b> <span style="color:var(--dim);font-size:12px">${c.cfg.key} · ${it.hash.slice(0, 10)}… · ${links}</span></span><span>${status} ${exit}</span></div>`;
+        }
+      }
+    }
+    if(!flat.length) html += '<p class="note">No strategies found in recent blocks. Ship one from the studio or the Sepolia trial.</p>';
+    box.innerHTML = html;
+  }catch(e){ box.innerHTML = '<p class="note">Scan failed: ' + escH(e.message || e) + '</p>'; }
+};
+window.__exitDash = async (g) => {
+  const s = (window.__dashFlat || [])[g]; if(!s) return;
+  if(!s.tokens.length){ alert('Token list unresolved for this strategy.'); return; }
+  if(!confirm(`Exit strategy on ${s.chainKey}? dock + revoke (real transactions).`)) return;
+  try{
+    const lines = await window.TW.exitStrategy(s.chainKey, s.app, s.hash, s.tokens);
+    alert('Exited:\n' + lines.join('\n'));
+    const maker = ((NAT && NAT.address) || (twAccount && twAccount.address) || '').toLowerCase();
+    if(maker) window.__scanDashboard(maker);
+  }catch(e){ alert('Exit failed: ' + (e && e.message || e)); }
 };
 
 function renderTrialPositions(){
