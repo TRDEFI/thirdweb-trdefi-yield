@@ -227,12 +227,14 @@ function afterConnect(addr){
   $('walletAddr').textContent = addr;
   $('walletLine').style.display='block';
   const cl = $('connLine'); if(cl) cl.innerHTML = 'Connection: <span class="ok">connected (' + addr.slice(0,10) + '…)</span>';
+  try{ localStorage.setItem('tw-connected', '1'); }catch(e){}
   loadPositions(addr.toLowerCase());
   const fr = $('feeReceiver'); if(fr && !fr.value) fr.placeholder = addr + ' (default)';
 }
 function afterDisconnect(){
   const cl = $('connLine'); if(cl) cl.innerHTML = 'Connection: <span class="warn">not connected</span>';
   $('walletLine').style.display='none';
+  try{ localStorage.removeItem('tw-connected'); }catch(e){}
 }
 
 // 3 · commission slider
@@ -434,6 +436,25 @@ function trackDisconnect(){
 }
 trackDisconnect();
 
+// Silent auto-reconnect on refresh (eth_accounts = no popup)
+async function autoRestore(){
+  try{
+    if(localStorage.getItem('tw-connected') !== '1') return;
+    const list = await discoverProviders(400);
+    if(!list.length) return;
+    const pref = list.find(d => /metamask/i.test(d.info.rdns || '')) || list[0];
+    const accs = await pref.provider.request({ method: 'eth_accounts' }).catch(() => []);
+    if(accs && accs.length){
+      NAT = { provider: pref.provider, address: accs[0] };
+      MODE = 'native';
+      const acc = { address: accs[0] };
+      twAccount = acc; wallet = acc; account = acc;
+      afterConnect(accs[0]);
+    }
+  }catch(e){}
+}
+autoRestore();
+
 function finishConnect(acc){
   twAccount = acc; wallet = acc; account = acc;
   window.__twClient = CLIENT;
@@ -507,7 +528,6 @@ window.TW = {
     if(!twAccount && !NAT) throw new Error('Connect first.');
     await ensureViem();
     if(MODE === 'tw') await ensureTW();
-    const chainId = CHAIN_IDS[chainKey]; if(!chainId) throw new Error('Unsupported chain.');
     const chainId = CHAIN_IDS[chainKey]; if(!chainId) throw new Error('Unsupported chain.');
     const me = (NAT && NAT.address) || twAccount.address;
     const send = async (to, abi, fn, args) => uwrite(chainId, to, abi, fn, args);
