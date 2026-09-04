@@ -88,8 +88,8 @@ footer a{color:var(--gold);text-decoration:none}
         <input type="number" id="amtB" value="1000" min="1">
       </div>
       <div>
-        <label>Your commission: <b id="feeVal" style="color:var(--gold)">0.3%</b> (max 20%)</label>
-        <input type="range" id="feeBps" min="0" max="2000" value="30">
+        <label>Your commission: <b id="feeVal" style="color:var(--gold)">0.30%</b> (max 20%)</label>
+        <input type="range" id="feeBps" min="0" max="2000000" step="1000" value="30000">
         <label>Fee receiver (default: your wallet)</label>
         <input type="text" id="feeReceiver" placeholder="0x… (empty = your wallet)">
         <label>Chain</label>
@@ -202,6 +202,8 @@ async function loadPairs(){
   for(const k of KNOWN){
     if(!pairs.some(p=>p.chain===k.chain && p.pair===k.pair)) pairs.push({...k,src:'list'});
   }
+  // Normalize: viem rejects non-checksummed mixed-case addresses
+  pairs.forEach(p=>{ if(p.tokenA) p.tokenA = p.tokenA.toLowerCase(); if(p.tokenB) p.tokenB = p.tokenB.toLowerCase(); });
   if(!pairs.length) pairs = [{chain:'base',pair:'USDC/USDT',verified:true,src:'fallback'}];
   window.__pairs = pairs;
   const nLive = pairs.filter(p=>p.src==='live').length;
@@ -234,7 +236,7 @@ function afterDisconnect(){
 }
 
 // 3 · commission slider
-$('feeBps').oninput = e=>{ $('feeVal').textContent = (e.target.value/100).toFixed(e.target.value%100?2:1)+'%'; };
+$('feeBps').oninput = e=>{ const v=+e.target.value; $('feeVal').textContent = (v/100000).toFixed(2)+'%'; };
 
 // 4 · AI draft (template-based now; server endpoint when key configured)
 $('draftBtn').onclick = async ()=>{
@@ -438,8 +440,8 @@ function finishConnect(acc){
 // Sepolia trial constants (TR-01 deployment doc)
 const SEP = {
   chainId: 84532,
-  aqua: '0x264fabbC81cf7Fb99f124C16aD0dfe08Fb639Df3',
-  router: '0xc549A34966352Bbc0A294BC3b717b390317776e1',
+  aqua: '0x264fabbc81cf7fb99f124c16ad0dfe08fb639df3',
+  router: '0xc549a34966352bbc0a294bc3b717b390317776e1',
   usdc: '0x036cbd53842c5426634e7929541ec2318f3dcf7e',
   dusdt: '0xa1b5da715e26418458e7639de17a99984094d210',
   explorer: 'https://sepolia.basescan.org/tx/',
@@ -536,7 +538,7 @@ window.TW = {
     const feeEl = document.getElementById('feeBps');
     const feeBps = Math.min(Math.max(+(feeEl ? feeEl.value : 30) || 0, 0), 2000000);
     const recvEl = document.getElementById('feeReceiver');
-    const receiver = ((recvEl && recvEl.value.trim()) || me);
+    const receiver = ((recvEl && recvEl.value.trim()) || me).toLowerCase();
     const saltHex = '0x' + BigInt(Date.now()).toString(16).padStart(16,'0') + '0'.repeat(48);
     const programHex = buildRetailProgram({tokenA: tA, tokenB: tB, x0: amtA, y0: amtB, makerFeeBps: feeBps, feeReceiver: receiver, salt64: BigInt('0x' + saltHex.slice(2, 18))});
     const dataHex = buildOrderData({tokenA: tA, tokenB: tB, programHex});
@@ -613,7 +615,7 @@ $t('trialBtn').onclick = async ()=>{
     const feeInput = $t('feeBps');
     const feeBps = Math.min(Math.max(+(feeInput ? feeInput.value : 30) || 0, 0), 2000000);
     const recvInput = $t('feeReceiver');
-    const receiver = ((recvInput && recvInput.value.trim()) || me);
+    const receiver = ((recvInput && recvInput.value.trim()) || me).toLowerCase();
     const saltHex = '0x' + BigInt(Date.now()).toString(16).padStart(16,'0') + '0'.repeat(48);
     const salt64 = BigInt('0x' + saltHex.slice(2, 18));
     const programHex = buildRetailProgram({tokenA, tokenB, x0: balA, y0: balB, makerFeeBps: feeBps, feeReceiver: receiver, salt64});
