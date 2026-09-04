@@ -56,7 +56,7 @@ footer a{color:var(--gold);text-decoration:none}
     <a class="btn ghost" href="#studio">Open Maker Studio</a>
   </div>
   <p class="note" id="extLine">Checking for browser extension…</p>
-  <p class="note" id="connLine">Bağlantı: <span class="warn">bağlı değil</span></p>
+  <p class="note" id="connLine">Connection: <span class="warn">not connected</span></p>
   <div id="emailZone" style="margin-top:8px">
     <span class="note">No extension? Login with email instead: </span>
     <input type="text" id="emailInput" placeholder="you@company.com" style="max-width:240px;display:inline-block">
@@ -203,12 +203,12 @@ async function loadPairs(){
 function afterConnect(addr){
   $('walletAddr').textContent = addr;
   $('walletLine').style.display='block';
-  const cl = $('connLine'); if(cl) cl.innerHTML = 'Bağlantı: <span class="ok">bağlı (' + addr.slice(0,10) + '…)</span>';
+  const cl = $('connLine'); if(cl) cl.innerHTML = 'Connection: <span class="ok">connected (' + addr.slice(0,10) + '…)</span>';
   loadPositions(addr.toLowerCase());
   const fr = $('feeReceiver'); if(fr && !fr.value) fr.placeholder = addr + ' (default)';
 }
 function afterDisconnect(){
-  const cl = $('connLine'); if(cl) cl.innerHTML = 'Bağlantı: <span class="warn">bağlı değil</span>';
+  const cl = $('connLine'); if(cl) cl.innerHTML = 'Connection: <span class="warn">not connected</span>';
   $('walletLine').style.display='none';
 }
 
@@ -295,7 +295,7 @@ let twAccount = null;
 try{
   const hasExt = typeof window !== 'undefined' && !!window.ethereum;
   const el = document.getElementById('extLine');
-  if(el) el.innerHTML = 'Eklenti kurulu: ' + (hasExt ? '<span class="ok">VAR</span> (Desktop ile giriş yap)' : '<span class="warn">YOK</span> (eklenti kur veya e-posta / QR ile giriş yap)');
+  if(el) el.innerHTML = 'Extension installed: ' + (hasExt ? '<span class="ok">YES</span> (use Desktop login)' : '<span class="warn">NO</span> (install an extension, or use email / QR login)');
 }catch(e){}
 
 function trackDisconnect(){
@@ -303,7 +303,7 @@ function trackDisconnect(){
     if(window.ethereum && window.ethereum.on){
       window.ethereum.on('accountsChanged', (accs)=>{
         if(!accs || !accs.length){ twAccount = null; account = null; wallet = null; afterDisconnect(); }
-        else if(twAccount && accs[0].toLowerCase() !== twAccount.address.toLowerCase()){ twAccount = null; account = null; wallet = null; afterDisconnect(); alert('Cüzdan hesabı değişti — yeniden bağlan.'); }
+        else if(twAccount && accs[0].toLowerCase() !== twAccount.address.toLowerCase()){ twAccount = null; account = null; wallet = null; afterDisconnect(); alert('Wallet account changed — please reconnect.'); }
       });
     }
   }catch(e){}
@@ -332,13 +332,23 @@ function log(msg){ const o=$t('trialOut'); o.style.display='block'; o.textConten
 
 window.TW = {
   client: CLIENT,
-  // Desktop: injected extension ONLY — clean error if absent, never QR
+  // Desktop: extension wallets ONLY (never QR). 'injected' is not a valid
+  // thirdweb v5 wallet id — try known extension ids in order.
   async connectDesktop(){
-    if(!window.ethereum) throw new Error('Eklenti bulunamadı. MetaMask extension kurulu ve açık olmalı.');
-    const w = createWallet('injected');
-    const acc = await w.connect({client: CLIENT});
-    wallet = w;
-    return finishConnect(acc);
+    if(!window.ethereum) throw new Error('No extension found. Install and unlock MetaMask (or another extension wallet), then retry.');
+    const ids = ['io.metamask', 'com.coinbase.wallet', 'me.rainbow', 'io.zerion.wallet', 'com.trustwallet.app'];
+    let lastErr = null;
+    for(const id of ids){
+      try{
+        const w = createWallet(id);
+        const acc = await w.connect({client: CLIENT});
+        // Guard: if it fell back to QR/WC instead of the extension, keep trying
+        if(!window.ethereum){ continue; }
+        wallet = w;
+        return finishConnect(acc);
+      }catch(e){ lastErr = e; }
+    }
+    throw lastErr || new Error('Extension found but connection was rejected.');
   },
   // Mobile: WalletConnect QR modal
   async connectMobile(){
@@ -418,14 +428,14 @@ window.TW = {
 };
 
 document.getElementById('deskBtn').onclick = async ()=>{
-  if(!window.TW){ alert('Cüzdan modülü yükleniyor. Birkaç saniye bekleyip retry.'); return; }
+  if(!window.TW){ alert('Wallet module still loading. Wait a few seconds and retry.'); return; }
   try{ const acc = await window.TW.connectDesktop(); afterConnect(acc.address); }
-  catch(e){ alert('Desktop bağlantı: ' + (e && e.message || e)); }
+  catch(e){ alert('Desktop: ' + (e && e.message || e)); }
 };
 document.getElementById('mobBtn').onclick = async ()=>{
-  if(!window.TW){ alert('Cüzdan modülü yükleniyor. Birkaç saniye bekleyip retry.'); return; }
+  if(!window.TW){ alert('Wallet module still loading. Wait a few seconds and retry.'); return; }
   try{ const acc = await window.TW.connectMobile(); afterConnect(acc.address + ' (mobile)'); }
-  catch(e){ alert('Mobile bağlantı: ' + (e && e.message || e)); }
+  catch(e){ alert('Mobile: ' + (e && e.message || e)); }
 };
 document.getElementById('emailSendBtn').onclick = async ()=>{
   const email = (document.getElementById('emailInput').value || '').trim();
