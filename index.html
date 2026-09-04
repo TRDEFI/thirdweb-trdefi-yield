@@ -136,23 +136,43 @@ let wallet = null, account = null, pairs = [];
 const $ = id => document.getElementById(id);
 const short = h => h ? h.slice(0,10)+'…'+h.slice(-6) : '—';
 
-// 1 · fetch verified pairs
+// Curated pairs (addresses verified from backend config). Merged UNDER live scan results.
+const KNOWN = [
+  {chain:'ethereum', pair:'USDC/USDT', tokenA:'0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', tokenB:'0xdAC17F958D2ee523a2206206994597C13D831ec7', verified:true},
+  {chain:'base', pair:'USDC/USDT', tokenA:'0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', tokenB:'0xfde4C96c8593536E31F229EA8f37b2ADa2699BB2', verified:true},
+  {chain:'arbitrum', pair:'USDC/USDT', tokenA:'0xaf88d065e77c8cC2239327C5EDb3A432268e5831', tokenB:'0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9', verified:true},
+  {chain:'optimism', pair:'USDC/USDT', tokenA:'0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85', tokenB:'0x94b008aA00579c1307B0EF2c499aD98a8ce58e58', verified:true},
+  {chain:'polygon', pair:'USDC/USDT', tokenA:'0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359', tokenB:'0xc2132D05D31c914a87C6611C10748AEb04B58e8F', verified:true},
+  {chain:'ethereum', pair:'WETH/USDT', tokenA:'0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2', tokenB:'0xdAC17F958D2ee523a2206206994597C13D831ec7', verified:false},
+  {chain:'ethereum', pair:'WBTC/USDT', tokenA:'0x2260fac5e5542a773aa44fbcfedf7c193bc2c599', tokenB:'0xdAC17F958D2ee523a2206206994597C13D831ec7', verified:false},
+  {chain:'ethereum', pair:'1INCH/USDT', tokenA:'0x111111111117dc0aa78b770fa6a738034120c302', tokenB:'0xdAC17F958D2ee523a2206206994597C13D831ec7', verified:false},
+];
+
+// 1 · fetch verified pairs (live scan first, curated list merged below)
 async function loadPairs(){
+  let live = [];
   try{
     const r = await fetch(API + '?filter=active&limit=50');
     const j = await r.json();
     const seen = new Map();
     (j.strategies||[]).forEach(s=>{
       const key = s.chain+':'+s.pair;
-      if(!seen.has(key)) seen.set(key,{chain:s.chain,pair:s.pair,verified:!!s.pair_verified,hash:s.strategy_hash,maker:s.maker});
+      if(seen.has(key)) return;
+      const toks = (s.tokens||[]).map(t=>t.token).sort();
+      seen.set(key,{chain:s.chain,pair:s.pair,verified:!!s.pair_verified,hash:s.strategy_hash,maker:s.maker,
+        tokenA:toks[0]||null,tokenB:toks[1]||null,src:'live'});
     });
-    pairs = [...seen.values()];
-  }catch(e){
-    pairs = [{chain:'base',pair:'USDC/USDT',verified:true},{chain:'base',pair:'USDC/ETH',verified:false}];
+    live = [...seen.values()];
+  }catch(e){ /* offline → curated only */ }
+  pairs = [...live];
+  for(const k of KNOWN){
+    if(!pairs.some(p=>p.chain===k.chain && p.pair===k.pair)) pairs.push({...k,src:'list'});
   }
-  $('pairCount').textContent = '· '+pairs.length+' live';
+  if(!pairs.length) pairs = [{chain:'base',pair:'USDC/USDT',verified:true,src:'fallback'}];
+  const nLive = pairs.filter(p=>p.src==='live').length;
+  $('pairCount').textContent = `· ${pairs.length} pairs (${nLive} live on-chain)`;
   $('pairList').innerHTML = pairs.map((p,i)=>
-    `<div class="pairchip${i===0?' sel':''}" data-i="${i}"><span><b>${p.pair}</b> <span style="color:var(--dim);font-size:12px">${p.chain}</span></span>${p.verified?'<span class="tag">verified</span>':'<span class="tag" style="color:var(--gold);border-color:rgba(245,158,11,.4)">unverified</span>'}</div>`
+    `<div class="pairchip${i===0?' sel':''}" data-i="${i}"><span><b>${p.pair}</b> <span style="color:var(--dim);font-size:12px">${p.chain} · ${p.src}</span></span>${p.verified?'<span class="tag">verified</span>':'<span class="tag" style="color:var(--gold);border-color:rgba(245,158,11,.4)">unverified</span>'}</div>`
   ).join('');
   $('pairSelect').innerHTML = pairs.map((p,i)=>`<option value="${i}">${p.pair} — ${p.chain}${p.verified?' ✓':''}</option>`).join('');
   document.querySelectorAll('.pairchip').forEach(c=>c.onclick=()=>{
@@ -249,7 +269,7 @@ function log(msg){ const o=$t('trialOut'); o.style.display='block'; o.textConten
 window.TW = {
   client: CLIENT,
   async connect(){
-    const wallets = [createWallet('io.metamask'), createWallet('com.coinbase.wallet'), createWallet('injected')];
+    const wallets = [createWallet('injected'), createWallet('io.metamask'), createWallet('com.coinbase.wallet')];
     let lastErr = null;
     for(const w of wallets){
       try{ twAccount = await w.connect({client: CLIENT}); wallet = w; account = twAccount; lastErr = null; break; }
