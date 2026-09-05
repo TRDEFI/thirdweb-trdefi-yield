@@ -64,7 +64,8 @@ footer a{color:var(--gold);text-decoration:none}
     <input type="text" id="otpInput" placeholder="code" style="max-width:110px;display:none;margin-left:6px">
     <button class="btn ghost" id="emailVerifyBtn" style="display:none;margin-left:6px">Verify &amp; connect</button>
   </div>
-  <p class="note" id="walletLine" style="display:none">Connected: <span id="walletAddr"></span></p>
+  <p class="note" id="walletLine" style="display:none">Connected: <span id="walletAddr"></span> <button class="btn ghost" id="logoutBtn" style="padding:4px 12px;font-size:11px;margin-left:8px">Log out</button></p>
+  <p class="note" style="font-size:11px">Log out clears this page session. MetaMask keeps site permission until you remove it (MetaMask → Connected sites).</p>
   <p class="note">Login with email/social (thirdweb) or connect Safe / MetaMask. Keys stay with their owner — thirdweb-hosted for email login, self-held for connected wallets.</p>
 </div>
 
@@ -228,15 +229,20 @@ function afterConnect(addr){
   $('walletAddr').textContent = addr;
   $('walletLine').style.display='block';
   const cl = $('connLine'); if(cl) cl.innerHTML = 'Connection: <span class="ok">connected (' + addr.slice(0,10) + '…)</span>';
-  try{ localStorage.setItem('tw-connected', '1'); }catch(e){}
   loadPositions(addr.toLowerCase());
   const fr = $('feeReceiver'); if(fr && !fr.value) fr.placeholder = addr + ' (default)';
 }
 function afterDisconnect(){
   const cl = $('connLine'); if(cl) cl.innerHTML = 'Connection: <span class="warn">not connected</span>';
   $('walletLine').style.display='none';
-  try{ localStorage.removeItem('tw-connected'); }catch(e){}
+  document.getElementById('posList').innerHTML = '<p class="note">Login to see your dashboard.</p>';
 }
+function doLogout(){
+  try{ if(window.__clearSession) window.__clearSession(); }catch(e){}
+  try{ account = null; wallet = null; window.__twAddr = null; window.__dashFlat = null; }catch(e){}
+  afterDisconnect();
+}
+document.getElementById('logoutBtn').onclick = doLogout;
 
 // 3 · commission slider
 $('feeBps').oninput = e=>{ const v=+e.target.value; $('feeVal').textContent = (v/100000).toFixed(2)+'%'; };
@@ -430,24 +436,9 @@ function trackDisconnect(){
 }
 trackDisconnect();
 
-// Silent auto-reconnect on refresh (eth_accounts = no popup)
-async function autoRestore(){
-  try{
-    if(localStorage.getItem('tw-connected') !== '1') return;
-    const list = await discoverProviders(400);
-    if(!list.length) return;
-    const pref = list.find(d => /metamask/i.test(d.info.rdns || '')) || list[0];
-    const accs = await pref.provider.request({ method: 'eth_accounts' }).catch(() => []);
-    if(accs && accs.length){
-      NAT = { provider: pref.provider, address: accs[0] };
-      MODE = 'native';
-      const acc = { address: accs[0] };
-      twAccount = acc; wallet = acc; account = acc;
-      afterConnect(accs[0]);
-    }
-  }catch(e){}
-}
-autoRestore();
+window.__clearSession = () => { twAccount = null; NAT = null; MODE = null; };
+
+// No silent auto-login: every visit starts logged out. Login is always explicit.
 
 function finishConnect(acc){
   twAccount = acc; wallet = acc; account = acc;
@@ -751,11 +742,13 @@ window.__scanDashboard = async function(maker){
           const g = flat.findIndex(f => f.ci === perChain.indexOf(c) && f.hash === it.hash && f.app === it.app);
           const pair = it.tokens.length ? it.tokens.map(symOrShort).join(' / ') : 'tokens resolve after first fill';
           const status = it.active ? '<span class="tag">active</span>' : '<span class="tag" style="color:var(--dim)">closed</span>';
-          const links = `<a href="${expRoot(c.cfg.key)}tx/${it.shipTx}" target="_blank" rel="noopener" style="color:var(--gold)">ship tx</a>` +
-            ` · <a href="${expRoot(c.cfg.key)}address/${it.app}" target="_blank" rel="noopener" style="color:var(--gold)">app</a>`;
+          const links = `<a href="${expRoot(c.cfg.key)}tx/${it.shipTx}" target="_blank" rel="noopener" style="color:var(--gold)">ship tx</a>`;
           const exit = (it.active && it.tokens.length)
             ? `<button class="btn ghost" style="padding:6px 14px;font-size:12px" onclick="window.__exitDash(${g})">Exit</button>` : '';
-          html += `<div class="pairchip"><span><b>${pair}</b> <span style="color:var(--dim);font-size:12px">${c.cfg.key} · ${it.hash.slice(0, 10)}… · ${links}</span></span><span>${status} ${exit}</span></div>`;
+          html += `<div class="pairchip" style="display:block"><div style="margin-bottom:6px"><b>${pair}</b> ${status} ${exit}</div>` +
+            `<div style="font-size:12px;color:var(--dim)">Wallet: <span style="color:var(--fg)">${makerLc.slice(0, 10)}…${makerLc.slice(-4)}</span>` +
+            ` · Router: <a href="${expRoot(c.cfg.key)}address/${it.app}" target="_blank" rel="noopener" style="color:var(--gold)">${it.app.slice(0, 10)}…</a>` +
+            ` · Strategy: <span style="font-family:monospace">${it.hash.slice(0, 12)}…</span> · ${links} · ${c.cfg.key}</div></div>`;
         }
       }
     }
