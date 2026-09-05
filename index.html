@@ -661,7 +661,37 @@ window.__scanDashboard = async function(maker){
       dockTopic = V.keccak256(enc.encode('Docked(address,address,bytes32)'));
     }
     const DEPTH = 100000n, CHUNK = 50000n;
-    const makerT = '0x' + '0'.repeat(24) + maker.slice(2).toLowerCase();
+    const makerLc = maker.toLowerCase();
+    const addrOf = w => '0x' + w.slice(-40).toLowerCase();
+    // NOTE: Sepolia wrapper emits Shipped/Docked WITHOUT indexed params (topic0 only).
+    // Canonical mainnet Aqua uses indexed args. Parse defensively: topics first, data words fallback.
+    // Tokens come from the embedded order bytes (packed tokenA/tokenB after data-len word).
+    const parseLog = l => {
+      const t = l.topics || [];
+      let maker, app, hash, dataHex = '';
+      if(t.length >= 4){ maker = addrOf(t[1]); app = addrOf(t[2]); hash = t[3].toLowerCase(); }
+      else {
+        const d = (l.data || '0x').slice(2);
+        maker = addrOf('0x' + (d.slice(24, 64) || '0'.repeat(40)));
+        app = addrOf('0x' + (d.slice(88, 128) || '0'.repeat(40)));
+        hash = ('0x' + (d.slice(128, 192) || '0'.repeat(64))).toLowerCase();
+        dataHex = d;
+      }
+      let tokens = [];
+      try{
+        // Event data: maker[0:64] app[64:128] hash[128:192] bytesOff[192:256],
+        // order at char 320: maker, traits, dataOff, then dataLen + packed tokenA(20) + tokenB(20)
+        const dataOffBytes = parseInt(dataHex.slice(448, 512), 16);
+        const dataAt = 320 + dataOffBytes * 2;
+        const dLen = parseInt(dataHex.slice(dataAt, dataAt + 64), 16);
+        if(dLen > 40){
+          const tA = '0x' + dataHex.slice(dataAt + 64, dataAt + 104);
+          const tB = '0x' + dataHex.slice(dataAt + 104, dataAt + 144);
+          if(/^0x[0-9a-f]{40}$/i.test(tA) && /^0x[0-9a-f]{40}$/i.test(tB) && tA.toLowerCase() < tB.toLowerCase()) tokens = [tA.toLowerCase(), tB.toLowerCase()];
+        }
+      }catch(e){}
+      return { maker, app, hash, tokens };
+    };
     const perChain = [];
     for(const cfg of DASH_CHAINS){
       try{
@@ -672,23 +702,25 @@ window.__scanDashboard = async function(maker){
         for(let from = from0; from <= latest; from += CHUNK){
           const to = from + CHUNK - 1n > latest ? latest : from + CHUNK - 1n;
           const [s, d] = await Promise.all([
-            rpcCall(VIEM_RPC[cfg.id], 'eth_getLogs', [{ address: cfg.aqua, topics: [shipTopic, makerT], fromBlock: hex(from), toBlock: hex(to) }]).catch(() => []),
-            rpcCall(VIEM_RPC[cfg.id], 'eth_getLogs', [{ address: cfg.aqua, topics: [dockTopic, makerT], fromBlock: hex(from), toBlock: hex(to) }]).catch(() => []),
+            rpcCall(VIEM_RPC[cfg.id], 'eth_getLogs', [{ address: cfg.aqua, topics: [shipTopic], fromBlock: hex(from), toBlock: hex(to) }]).catch(() => []),
+            rpcCall(VIEM_RPC[cfg.id], 'eth_getLogs', [{ address: cfg.aqua, topics: [dockTopic], fromBlock: hex(from), toBlock: hex(to) }]).catch(() => []),
           ]);
           shipped.push(...s); docked.push(...d);
         }
         const byKey = new Map();
         for(const l of shipped){
-          const app = '0x' + l.topics[2].slice(-40), hash = l.topics[3];
-          const k = app.toLowerCase() + hash.toLowerCase();
-          const e = byKey.get(k) || { app, hash, shipBlock: 0n, shipTx: null, dockBlock: null };
+          const { maker, app, hash, tokens } = parseLog(l);
+          if(maker !== makerLc) continue;
+          const k = app + hash;
+          const e = byKey.get(k) || { app, hash, shipBlock: 0n, shipTx: null, dockBlock: null, tokens: [] };
           const b = BigInt(l.blockNumber);
-          if(b >= e.shipBlock){ e.shipBlock = b; e.shipTx = l.transactionHash; }
+          if(b >= e.shipBlock){ e.shipBlock = b; e.shipTx = l.transactionHash; if(tokens.length) e.tokens = tokens; }
           byKey.set(k, e);
         }
         for(const l of docked){
-          const app = '0x' + l.topics[2].slice(-40), hash = l.topics[3];
-          const k = app.toLowerCase() + hash.toLowerCase();
+          const { maker, app, hash } = parseLog(l);
+          if(maker !== makerLc) continue;
+          const k = app + hash;
           const e = byKey.get(k) || { app, hash, shipBlock: 0n, shipTx: null, dockBlock: null };
           const b = BigInt(l.blockNumber);
           if(!e.dockBlock || b > e.dockBlock) e.dockBlock = b;
@@ -697,8 +729,8 @@ window.__scanDashboard = async function(maker){
         const items = [];
         for(const e of byKey.values()){
           const active = !!e.shipTx && (!e.dockBlock || e.shipBlock >= e.dockBlock);
-          let tokens = [];
-          if(e.shipTx){ try{ tokens = await shipTokens(VIEM_RPC[cfg.id], e.shipTx); }catch(err){} }
+          let tokens = e.tokens && e.tokens.length ? e.tokens : [];
+          if(!tokens.length && e.shipTx){ try{ tokens = await shipTokens(VIEM_RPC[cfg.id], e.shipTx); }catch(err){} }
           items.push({ ...e, chainKey: cfg.key, id: cfg.id, active, tokens });
         }
         perChain.push({ cfg, items });
@@ -764,7 +796,13 @@ window.__exitTrial = async (i) => {
   const s = list[i]; if(!s) return;
   if(!confirm('Exit this Sepolia trial strategy? dock + revoke allowances (testnet, no value).')) return;
   try{
-    const lines = await window.TW.exitStrategy(s.chainKey, s.app, s.strategyHash, s.tokens);
+    // Prefer on-chain truth (fresh scan) over the saved values — the contract's
+    // hash wins if they ever differ.
+    let app = s.app, hash = s.strategyHash, tokens = s.tokens;
+    const flat = window.__dashFlat || [];
+    const on = flat.find(f => f.chainKey === s.chainKey && f.app && s.app && f.app.toLowerCase() === s.app.toLowerCase() && f.active);
+    if(on && on.hash && on.tokens && on.tokens.length){ app = on.app; hash = on.hash; tokens = on.tokens; }
+    const lines = await window.TW.exitStrategy(s.chainKey, app, hash, tokens);
     alert('Exited:\n' + lines.join('\n'));
     list.splice(i, 1);
     localStorage.setItem('tw-trial-positions', JSON.stringify(list));
