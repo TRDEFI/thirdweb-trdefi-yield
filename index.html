@@ -230,6 +230,7 @@ function afterConnect(addr){
   $('walletLine').style.display='block';
   const cl = $('connLine'); if(cl) cl.innerHTML = 'Connection: <span class="ok">connected (' + addr.slice(0,10) + '…)</span>';
   loadPositions(addr.toLowerCase());
+  renderTrialPositions();
   const fr = $('feeReceiver'); if(fr && !fr.value) fr.placeholder = addr + ' (default)';
 }
 function afterDisconnect(){
@@ -470,21 +471,26 @@ window.TW = {
     if(!list.length) throw new Error('No extension found. Install and unlock MetaMask (or Rabby/Zerion/Coinbase), then retry.');
     const pref = list.find(d => (d.info.rdns||'').toLowerCase() === 'io.metamask') || list[0];
     const provider = pref.provider;
+    // Force MetaMask to return the CURRENTLY SELECTED account (not cached)
+    try{
+      await provider.request({ method: 'wallet_requestPermissions', params: [{ eth_accounts: {} }] });
+    }catch(e){ /* permission request may fail if already granted; continue */ }
     const accs = await provider.request({ method: 'eth_requestAccounts' });
     if(!accs || !accs.length) throw new Error('Connection rejected in wallet.');
-    NAT = { provider, address: accs[0] };
+    const freshAddr = accs[0].toLowerCase();
+    NAT = { provider, address: freshAddr };
     MODE = 'native';
     try{
       provider.on && provider.on('accountsChanged', (a) => {
         if(!a || !a.length || a[0].toLowerCase() !== NAT.address.toLowerCase()){
-          NAT = null; MODE = null; twAccount = null; account = null; wallet = null; afterDisconnect();
+          doLogout();
         }
       });
-      provider.on && provider.on('disconnect', () => { NAT = null; MODE = null; twAccount = null; account = null; wallet = null; afterDisconnect(); });
+      provider.on && provider.on('disconnect', () => doLogout());
     }catch(e){}
-    wallet = { address: accs[0] };
-    const acc = { address: accs[0] };
-    try{ const el = document.getElementById('extLine'); if(el) el.innerHTML += ` — using <b>${pref.info.name}</b>`; }catch(e){}
+    wallet = { address: freshAddr };
+    const acc = { address: freshAddr };
+    try{ const el = document.getElementById('extLine'); if(el) el.innerHTML += ` — using <b>${pref.info.name}</b>`; }catch(e){ }
     return finishConnect(acc);
   },
   // Mobile: WalletConnect QR modal
@@ -752,7 +758,7 @@ window.__scanDashboard = async function(maker){
         }
       }
     }
-    if(!flat.length) html += '<p class="note">No strategies found in recent blocks. Ship one from the studio or the Sepolia trial.</p>';
+    if(!flat.length) html += '<p class="note">No strategies found for <code>' + escH(makerLc.slice(0,10) + '…' + makerLc.slice(-4)) + '</code> in recent blocks. Ship one from the studio or the Sepolia trial.</p>';
     box.innerHTML = html;
   }catch(e){ box.innerHTML = '<p class="note">Scan failed: ' + escH(e.message || e) + '</p>'; }
 };
@@ -771,33 +777,38 @@ window.__exitDash = async (g) => {
 function renderTrialPositions(){
   let list = [];
   try{ list = JSON.parse(localStorage.getItem('tw-trial-positions') || '[]'); }catch(e){}
+  // Filter: only show trials for the currently connected wallet
+  const connected = ((NAT && NAT.address) || (twAccount && twAccount.address) || '').toLowerCase();
+  const mine = connected ? list.filter(s => s.maker && s.maker.toLowerCase() === connected) : [];
   let box = document.getElementById('trialPos');
   if(!box){
     box = document.createElement('div'); box.id = 'trialPos';
     const out = document.getElementById('trialOut');
     if(out && out.after) out.after(box); else return;
   }
-  box.innerHTML = list.length
-    ? '<p class="note" style="margin-top:12px"><strong>Your Sepolia trial positions (this browser):</strong></p>' + list.map((s, i) =>
+  box.innerHTML = mine.length
+    ? '<p class="note" style="margin-top:12px"><strong>Your Sepolia trial positions (wallet: ' + connected.slice(0,10) + '…):</strong></p>' + mine.map((s, i) =>
       `<div class="pairchip"><span><b>Trial strategy</b> <span style="color:var(--dim);font-size:12px">sepolia · ${s.strategyHash.slice(0, 12)}… · ${new Date(s.when).toLocaleString()}</span></span><button class="btn ghost" style="padding:6px 14px;font-size:12px" onclick="window.__exitTrial(${i})">Exit</button></div>`
     ).join('')
-    : '';
+    : (connected ? '<p class="note" style="margin-top:12px">No trial positions for this wallet yet.</p>' : '');
 }
 window.__exitTrial = async (i) => {
   let list = [];
   try{ list = JSON.parse(localStorage.getItem('tw-trial-positions') || '[]'); }catch(e){}
-  const s = list[i]; if(!s) return;
+  const connected = ((NAT && NAT.address) || (twAccount && twAccount.address) || '').toLowerCase();
+  const mine = connected ? list.filter(s => s.maker && s.maker.toLowerCase() === connected) : [];
+  const s = mine[i]; if(!s) return;
   if(!confirm('Exit this Sepolia trial strategy? dock + revoke allowances (testnet, no value).')) return;
   try{
-    // Prefer on-chain truth (fresh scan) over the saved values — the contract's
-    // hash wins if they ever differ.
     let app = s.app, hash = s.strategyHash, tokens = s.tokens;
     const flat = window.__dashFlat || [];
     const on = flat.find(f => f.chainKey === s.chainKey && f.app && s.app && f.app.toLowerCase() === s.app.toLowerCase() && f.active);
     if(on && on.hash && on.tokens && on.tokens.length){ app = on.app; hash = on.hash; tokens = on.tokens; }
     const lines = await window.TW.exitStrategy(s.chainKey, app, hash, tokens);
     alert('Exited:\n' + lines.join('\n'));
-    list.splice(i, 1);
+    // Remove from localStorage
+    const idx = list.indexOf(s);
+    if(idx >= 0) list.splice(idx, 1);
     localStorage.setItem('tw-trial-positions', JSON.stringify(list));
     renderTrialPositions();
   }catch(e){ alert('Exit failed: ' + (e && e.message || e)); }
@@ -853,7 +864,7 @@ $t('trialBtn').onclick = async ()=>{
       [{ maker: me, traits: buildTraits(), data: dataHex }],
     ));
     const saved = JSON.parse(localStorage.getItem('tw-trial-positions') || '[]');
-    saved.push({ chainKey: 'baseSepolia', app: SEP.router, strategyHash: stratHash, tokens: [tokenA, tokenB], maker: me, when: Date.now() });
+    saved.push({ chainKey: 'baseSepolia', app: SEP.router, strategyHash: stratHash, tokens: [tokenA, tokenB], maker: me.toLowerCase(), when: Date.now() });
     localStorage.setItem('tw-trial-positions', JSON.stringify(saved));
     log('Strategy hash: ' + stratHash);
     log('DONE — strategy shipped on Sepolia. Exit anytime with the Exit button below.');
