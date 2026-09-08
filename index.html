@@ -112,7 +112,7 @@ footer a{color:var(--gold);text-decoration:none}
   </div>
 
   <div class="card" id="positions">
-    <h2>3 · My Dashboard — positions &amp; Revoke <button class="btn ghost" style="padding:4px 12px;font-size:11px;margin-left:8px" onclick="if(window.__twAddr&&window.__scanDashboard)window.__scanDashboard(window.__twAddr.toLowerCase())">↻ Rescan</button></h2>
+    <h2>3 · My Dashboard — positions &amp; Revoke <button class="btn ghost" style="padding:4px 12px;font-size:11px;margin-left:8px" onclick="if(window.__auth&&window.__auth.address&&window.__scanDashboard)window.__scanDashboard(window.__auth.address)">↻ Rescan</button></h2>
     <div class="sub">TESTNET and MAINNET sections are clearly separated. Exit = dock + revoke allowance. Fee totals coming later — explorer links for now.</div>
     <div id="posList"><p class="note">Connect a wallet to see your positions.</p></div>
   </div>
@@ -162,8 +162,12 @@ const KNOWN = [
   {chain:'ethereum', pair:'1INCH/USDT', tokenA:'0x111111111117dc0aa78b770fa6a738034120c302', tokenB:'0xdAC17F958D2ee523a2206206994597C13D831ec7', verified:false},
 ];
 
-// 0 · Wallet discovery (plain JS, zero dependencies — ALWAYS runs)
+// 0 · Wallet discovery + auth state (plain JS, zero dependencies — ALWAYS runs)
 (function(){
+  // Auth state lives here, shared with the module via window.__auth
+  window.__auth = { connected: false, address: null, mode: null };
+  window.__authChangeHandlers = [];
+
   function found(list){
     var el = document.getElementById('extLine');
     if(!el) return;
@@ -225,7 +229,6 @@ async function loadPairs(){
 // 2 · connect buttons are bound in the ESM module below (needs thirdweb SDK).
 // This stub only fills the fee-receiver hint once connected.
 function afterConnect(addr){
-  window.__twAddr = addr;
   $('walletAddr').textContent = addr;
   $('walletLine').style.display='block';
   const cl = $('connLine'); if(cl) cl.innerHTML = 'Connection: <span class="ok">connected (' + addr.slice(0,10) + '…)</span>';
@@ -239,9 +242,10 @@ function afterDisconnect(){
   document.getElementById('posList').innerHTML = '<p class="note">Login to see your dashboard.</p>';
 }
 function doLogout(){
-  try{ if(window.__clearSession) window.__clearSession(); }catch(e){}
-  try{ account = null; wallet = null; window.__twAddr = null; window.__dashFlat = null; }catch(e){}
+  try{ clearAuth(); }catch(e){}
+  try{ window.__dashFlat = null; }catch(e){}
   afterDisconnect();
+  renderTrialPositions();
 }
 document.getElementById('logoutBtn').onclick = doLogout;
 
@@ -350,6 +354,18 @@ let twAccount = null;
 let MODE = null; // 'native' (EIP-6963 + viem, no vendor) | 'tw' (thirdweb email/mobile)
 let NAT = null;  // { provider, address }
 
+// ---- Auth state (shared with classic script via window.__auth) ----
+function setAuth(addr, mode){
+  window.__auth = { connected: true, address: (addr || '').toLowerCase(), mode: mode };
+  window.__authChangeHandlers.forEach(fn => { try{ fn(window.__auth); }catch(e){} });
+}
+function clearAuth(){
+  window.__auth = { connected: false, address: null, mode: null };
+  NAT = null; MODE = null; twAccount = null;
+  window.__authChangeHandlers.forEach(fn => { try{ fn(window.__auth); }catch(e){} });
+}
+function onAuthChange(fn){ window.__authChangeHandlers.push(fn); }
+
 // ---- Native wallet layer (free bridge: EIP-6963 discovery + viem, no QR, no vendor) ----
 function discoverProviders(timeoutMs = 500){
   return new Promise(resolve => {
@@ -425,24 +441,22 @@ try{
   });
 }catch(e){}
 
-function trackDisconnect(){
-  try{
-    if(window.ethereum && window.ethereum.on){
-      window.ethereum.on('accountsChanged', (accs)=>{
-        if(!accs || !accs.length){ twAccount = null; account = null; wallet = null; afterDisconnect(); }
-        else if(twAccount && accs[0].toLowerCase() !== twAccount.address.toLowerCase()){ twAccount = null; account = null; wallet = null; afterDisconnect(); alert('Wallet account changed — please reconnect.'); }
-      });
-    }
-  }catch(e){}
+// Wallet change detection via the EIP-6963 provider (not window.ethereum)
+function trackWalletChanges(provider){
+  if(!provider || !provider.on) return;
+  provider.on('accountsChanged', (accs) => {
+    const cur = (window.__auth && window.__auth.address) || '';
+    if(!accs || !accs.length){ clearAuth(); afterDisconnect(); }
+    else if(cur && accs[0].toLowerCase() !== cur){ clearAuth(); afterDisconnect(); alert('Wallet account changed — please reconnect.'); }
+  });
+  provider.on('disconnect', () => { clearAuth(); afterDisconnect(); });
 }
-trackDisconnect();
-
-window.__clearSession = () => { twAccount = null; NAT = null; MODE = null; };
 
 // No silent auto-login: every visit starts logged out. Login is always explicit.
 
 function finishConnect(acc){
-  twAccount = acc; wallet = acc; account = acc;
+  twAccount = acc;
+  setAuth(acc.address, MODE);
   window.__twClient = CLIENT;
   return acc;
 }
@@ -480,15 +494,7 @@ window.TW = {
     const freshAddr = accs[0].toLowerCase();
     NAT = { provider, address: freshAddr };
     MODE = 'native';
-    try{
-      provider.on && provider.on('accountsChanged', (a) => {
-        if(!a || !a.length || a[0].toLowerCase() !== NAT.address.toLowerCase()){
-          doLogout();
-        }
-      });
-      provider.on && provider.on('disconnect', () => doLogout());
-    }catch(e){}
-    wallet = { address: freshAddr };
+    trackWalletChanges(provider);
     const acc = { address: freshAddr };
     try{ const el = document.getElementById('extLine'); if(el) el.innerHTML += ` — using <b>${pref.info.name}</b>`; }catch(e){ }
     return finishConnect(acc);
@@ -498,7 +504,6 @@ window.TW = {
     await ensureTW();
     const w = createWallet('walletConnect', { projectId: 'a319eb8a9519ffdab5db0438ae7bc27f' });
     const acc = await w.connect({client: CLIENT, showQrModal: true});
-    wallet = w;
     MODE = 'tw';
     return finishConnect(acc);
   },
@@ -510,7 +515,6 @@ window.TW = {
     await ensureTW();
     const w = inAppWallet();
     const acc = await w.connect({client: CLIENT, strategy: 'email', email, verificationCode: code});
-    wallet = w;
     MODE = 'tw';
     return finishConnect(acc);
   },
@@ -778,7 +782,7 @@ function renderTrialPositions(){
   let list = [];
   try{ list = JSON.parse(localStorage.getItem('tw-trial-positions') || '[]'); }catch(e){}
   // Filter: only show trials for the currently connected wallet
-  const connected = ((NAT && NAT.address) || (twAccount && twAccount.address) || '').toLowerCase();
+  const connected = (window.__auth && window.__auth.address) || '';
   const mine = connected ? list.filter(s => s.maker && s.maker.toLowerCase() === connected) : [];
   let box = document.getElementById('trialPos');
   if(!box){
@@ -795,7 +799,7 @@ function renderTrialPositions(){
 window.__exitTrial = async (i) => {
   let list = [];
   try{ list = JSON.parse(localStorage.getItem('tw-trial-positions') || '[]'); }catch(e){}
-  const connected = ((NAT && NAT.address) || (twAccount && twAccount.address) || '').toLowerCase();
+  const connected = (window.__auth && window.__auth.address) || '';
   const mine = connected ? list.filter(s => s.maker && s.maker.toLowerCase() === connected) : [];
   const s = mine[i]; if(!s) return;
   if(!confirm('Exit this Sepolia trial strategy? dock + revoke allowances (testnet, no value).')) return;
