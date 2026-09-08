@@ -776,6 +776,22 @@ window.__scanDashboard = async function(maker){
         perChain.push({ cfg, items });
       }catch(err){ perChain.push({ cfg, items: [], error: String((err && err.message) || err) }); }
     }
+    // Merge: add localStorage trial positions that the on-chain scan can't see (pruned events)
+    let trialPos = [];
+    try{ trialPos = JSON.parse(localStorage.getItem('tw-trial-positions') || '[]'); }catch(e){}
+    const myTrials = trialPos.filter(t => t.maker && t.maker.toLowerCase() === makerLc);
+    if(myTrials.length){
+      const sepCfg = DASH_CHAINS.find(c => c.key === 'baseSepolia');
+      const sepChain = perChain.find(c => c.cfg.key === 'baseSepolia');
+      if(sepCfg){
+        const existing = sepChain ? sepChain.items : [];
+        for(const t of myTrials){
+          if(existing.some(e => e.hash === t.strategyHash)) continue; // already in chain scan
+          existing.push({ app: t.app, hash: t.strategyHash, shipBlock: 0n, shipTx: null, dockBlock: null, tokens: t.tokens || [], chainKey: 'baseSepolia', id: 84532, active: true, fromStorage: true });
+        }
+        if(!sepChain) perChain.push({ cfg: sepCfg, items: existing });
+      }
+    }
     const flat = [];
     perChain.forEach((c, ci) => c.items.forEach((it, ii) => flat.push({ ...it, ci, ii })));
     window.__dashFlat = flat;
@@ -791,7 +807,9 @@ window.__scanDashboard = async function(maker){
           const g = flat.findIndex(f => f.ci === perChain.indexOf(c) && f.hash === it.hash && f.app === it.app);
           const pair = it.tokens.length ? it.tokens.map(symOrShort).join(' / ') : 'tokens resolve after first fill';
           const status = it.active ? '<span class="tag">active</span>' : '<span class="tag" style="color:var(--dim)">closed</span>';
-          const links = `<a href="${expRoot(c.cfg.key)}tx/${it.shipTx}" target="_blank" rel="noopener" style="color:var(--gold)">ship tx</a>`;
+          const links = it.shipTx
+            ? `<a href="${expRoot(c.cfg.key)}tx/${it.shipTx}" target="_blank" rel="noopener" style="color:var(--gold)">ship tx</a>`
+            : '<span style="color:var(--dim)">saved locally</span>';
           const exit = (it.active && it.tokens.length)
             ? `<button class="btn ghost" style="padding:6px 14px;font-size:12px" onclick="window.__exitDash(${g})">Exit</button>` : '';
           html += `<div class="pairchip" style="display:block"><div style="margin-bottom:6px"><b>${pair}</b> ${status} ${exit}</div>` +
@@ -808,6 +826,11 @@ window.__scanDashboard = async function(maker){
 window.__exitDash = async (g) => {
   const s = (window.__dashFlat || [])[g]; if(!s) return;
   if(!s.tokens.length){ alert('Token list unresolved for this strategy.'); return; }
+  // If this is a localStorage-only position (no ship tx), we need the real hash
+  if(!s.shipTx){
+    alert('This position was saved locally but its on-chain data is no longer available (pruned by the RPC). To exit, you need an archive node or the original ship transaction hash.');
+    return;
+  }
   if(!confirm(`Exit strategy on ${s.chainKey}? dock + revoke (real transactions).`)) return;
   try{
     const lines = await window.TW.exitStrategy(s.chainKey, s.app, s.hash, s.tokens);
