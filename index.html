@@ -249,6 +249,46 @@ function doLogout(){
 }
 document.getElementById('logoutBtn').onclick = doLogout;
 
+// Trial positions (browser storage, filtered by connected wallet)
+function renderTrialPositions(){
+  let list = [];
+  try{ list = JSON.parse(localStorage.getItem('tw-trial-positions') || '[]'); }catch(e){}
+  const connected = (window.__auth && window.__auth.address) || '';
+  const mine = connected ? list.filter(s => s.maker && s.maker.toLowerCase() === connected) : [];
+  let box = document.getElementById('trialPos');
+  if(!box){
+    box = document.createElement('div'); box.id = 'trialPos';
+    const out = document.getElementById('trialOut');
+    if(out && out.after) out.after(box); else return;
+  }
+  box.innerHTML = mine.length
+    ? '<p class="note" style="margin-top:12px"><strong>Your Sepolia trial positions (wallet: ' + connected.slice(0,10) + '…):</strong></p>' + mine.map((s, i) =>
+      `<div class="pairchip"><span><b>Trial strategy</b> <span style="color:var(--dim);font-size:12px">sepolia · ${s.strategyHash.slice(0, 12)}… · ${new Date(s.when).toLocaleString()}</span></span><button class="btn ghost" style="padding:6px 14px;font-size:12px" onclick="window.__exitTrial(${i})">Exit</button></div>`
+    ).join('')
+    : (connected ? '<p class="note" style="margin-top:12px">No trial positions for this wallet yet.</p>' : '');
+}
+window.__exitTrial = async (i) => {
+  let list = [];
+  try{ list = JSON.parse(localStorage.getItem('tw-trial-positions') || '[]'); }catch(e){}
+  const connected = (window.__auth && window.__auth.address) || '';
+  const mine = connected ? list.filter(s => s.maker && s.maker.toLowerCase() === connected) : [];
+  const s = mine[i]; if(!s) return;
+  if(!confirm('Exit this Sepolia trial strategy? dock + revoke allowances (testnet, no value).')) return;
+  try{
+    let app = s.app, hash = s.strategyHash, tokens = s.tokens;
+    const flat = window.__dashFlat || [];
+    const on = flat.find(f => f.chainKey === s.chainKey && f.app && s.app && f.app.toLowerCase() === s.app.toLowerCase() && f.active);
+    if(on && on.hash && on.tokens && on.tokens.length){ app = on.app; hash = on.hash; tokens = on.tokens; }
+    const lines = await window.TW.exitStrategy(s.chainKey, app, hash, tokens);
+    alert('Exited:\n' + lines.join('\n'));
+    const idx = list.indexOf(s);
+    if(idx >= 0) list.splice(idx, 1);
+    localStorage.setItem('tw-trial-positions', JSON.stringify(list));
+    renderTrialPositions();
+  }catch(e){ alert('Exit failed: ' + (e && e.message || e)); }
+};
+renderTrialPositions();
+
 // 3 · commission slider
 $('feeBps').oninput = e=>{ const v=+e.target.value; $('feeVal').textContent = (v/100000).toFixed(2)+'%'; };
 
@@ -778,46 +818,7 @@ window.__exitDash = async (g) => {
   }catch(e){ alert('Exit failed: ' + (e && e.message || e)); }
 };
 
-function renderTrialPositions(){
-  let list = [];
-  try{ list = JSON.parse(localStorage.getItem('tw-trial-positions') || '[]'); }catch(e){}
-  // Filter: only show trials for the currently connected wallet
-  const connected = (window.__auth && window.__auth.address) || '';
-  const mine = connected ? list.filter(s => s.maker && s.maker.toLowerCase() === connected) : [];
-  let box = document.getElementById('trialPos');
-  if(!box){
-    box = document.createElement('div'); box.id = 'trialPos';
-    const out = document.getElementById('trialOut');
-    if(out && out.after) out.after(box); else return;
-  }
-  box.innerHTML = mine.length
-    ? '<p class="note" style="margin-top:12px"><strong>Your Sepolia trial positions (wallet: ' + connected.slice(0,10) + '…):</strong></p>' + mine.map((s, i) =>
-      `<div class="pairchip"><span><b>Trial strategy</b> <span style="color:var(--dim);font-size:12px">sepolia · ${s.strategyHash.slice(0, 12)}… · ${new Date(s.when).toLocaleString()}</span></span><button class="btn ghost" style="padding:6px 14px;font-size:12px" onclick="window.__exitTrial(${i})">Exit</button></div>`
-    ).join('')
-    : (connected ? '<p class="note" style="margin-top:12px">No trial positions for this wallet yet.</p>' : '');
-}
-window.__exitTrial = async (i) => {
-  let list = [];
-  try{ list = JSON.parse(localStorage.getItem('tw-trial-positions') || '[]'); }catch(e){}
-  const connected = (window.__auth && window.__auth.address) || '';
-  const mine = connected ? list.filter(s => s.maker && s.maker.toLowerCase() === connected) : [];
-  const s = mine[i]; if(!s) return;
-  if(!confirm('Exit this Sepolia trial strategy? dock + revoke allowances (testnet, no value).')) return;
-  try{
-    let app = s.app, hash = s.strategyHash, tokens = s.tokens;
-    const flat = window.__dashFlat || [];
-    const on = flat.find(f => f.chainKey === s.chainKey && f.app && s.app && f.app.toLowerCase() === s.app.toLowerCase() && f.active);
-    if(on && on.hash && on.tokens && on.tokens.length){ app = on.app; hash = on.hash; tokens = on.tokens; }
-    const lines = await window.TW.exitStrategy(s.chainKey, app, hash, tokens);
-    alert('Exited:\n' + lines.join('\n'));
-    // Remove from localStorage
-    const idx = list.indexOf(s);
-    if(idx >= 0) list.splice(idx, 1);
-    localStorage.setItem('tw-trial-positions', JSON.stringify(list));
-    renderTrialPositions();
-  }catch(e){ alert('Exit failed: ' + (e && e.message || e)); }
-};
-renderTrialPositions();
+// renderTrialPositions and __exitTrial moved to classic script (line ~250)
 
 $t('trialBtn').onclick = async ()=>{
   $t('trialOut').style.display='block'; $t('trialOut').textContent='';
