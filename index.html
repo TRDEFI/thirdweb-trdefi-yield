@@ -694,13 +694,12 @@ window.__scanDashboard = async function(maker){
     const V = await import('https://esm.sh/viem@2.55.19');
     let shipTopic, dockTopic;
     try{
-      shipTopic = V.getEventSelector(V.parseAbiItem('event Shipped(address indexed maker, address indexed app, bytes32 indexed strategyHash, bytes strategy)'));
-      dockTopic = V.getEventSelector(V.parseAbiItem('event Docked(address indexed maker, address indexed app, bytes32 indexed strategyHash)'));
-    }catch(e){
+      // NOTE: Sepolia wrapper emits Shipped/Docked WITHOUT indexed params.
+      // Use the non-indexed signature for the topic (matches on-chain data).
       const enc = new TextEncoder();
-      shipTopic = V.keccak256(enc.encode('Shipped(address,address,bytes32,bytes)'));
-      dockTopic = V.keccak256(enc.encode('Docked(address,address,bytes32)'));
-    }
+      shipTopic = keccak256Fn(enc.encode('Shipped(address,address,bytes32,bytes)'));
+      dockTopic = keccak256Fn(enc.encode('Docked(address,address,bytes32)'));
+    }catch(e){}
     const DEPTH = 100000n, CHUNK = 50000n;
     const makerLc = maker.toLowerCase();
     const addrOf = w => '0x' + w.slice(-40).toLowerCase();
