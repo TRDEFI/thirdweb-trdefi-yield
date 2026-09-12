@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="base:app_id" content="6aa57ed8625bfb237c8551f9">
 <title>TRDeFi × thirdweb — Non-Custodial Yield for Everyone</title>
 <meta name="description" content="Connect with any wallet, pick a verified strategy pair, set your commission, and earn swap fees without moving funds from your wallet.">
 <style>
@@ -353,14 +354,14 @@ import { buildRetailProgram, buildTraits, buildOrderData } from './ai-agent/buil
 // ---- Lazy SDK loading: a failed CDN must NEVER silently kill the page ----
 let CLIENT = null, CHAINS = null, baseSepolia = null;
 let createWallet, inAppWallet, preAuthenticate, getContract, prepareContractCall, sendTransaction;
-let createWalletClient, createPublicClient, custom, httpV, parseAbiFn, keccak256Fn, encodeAbiFn;
+let createWalletClient, createPublicClient, custom, httpV, parseAbiFn, keccak256Fn, encodeAbiFn, encodeFnFn;
 let ERC20_ABI = null, AQUA_ABI = null;
 let SDK_ERR = '';
 async function ensureViem(){
   if(createWalletClient) return;
   try{
     const V = await import('https://esm.sh/viem@2.55.19');
-    ({ createWalletClient, createPublicClient, custom, http: httpV, parseAbi: parseAbiFn, keccak256: keccak256Fn, encodeAbiParameters: encodeAbiFn } = V);
+    ({ createWalletClient, createPublicClient, custom, http: httpV, parseAbi: parseAbiFn, keccak256: keccak256Fn, encodeAbiParameters: encodeAbiFn, encodeFunctionData: encodeFnFn } = V);
     ERC20_ABI = parseAbiFn(['function approve(address,uint256) returns (bool)', 'function balanceOf(address) view returns (uint256)', 'function decimals() view returns (uint8)']);
     AQUA_ABI = parseAbiFn(['function ship(address,bytes,address[],uint256[]) returns (bytes32)', 'function dock(address,bytes32,address[])']);
   }catch(e){ throw new Error('viem failed to load: ' + (e && e.message || e)); }
@@ -371,7 +372,7 @@ async function ensureTW(){
     const [T, W, CH] = await Promise.all([import('thirdweb'), import('thirdweb/wallets'), import('thirdweb/chains')]);
     CLIENT = T.createThirdwebClient({ clientId: '8806ca8739e711e387da3bfb7c20a3f0' }); // publishable, domain-restricted
     ({ createWallet, inAppWallet, preAuthenticate } = W);
-    ({ getContract, prepareContractCall, sendTransaction } = T);
+    ({ getContract, prepareContractCall, sendTransaction, prepareTransaction } = T);
     CHAINS = { base: CH.base, ethereum: CH.mainnet, arbitrum: CH.arbitrum, optimism: CH.optimism, polygon: CH.polygon, baseSepolia: CH.baseSepolia };
     baseSepolia = CH.baseSepolia;
   }catch(e){ throw new Error('thirdweb failed to load: ' + (e && e.message || e)); }
@@ -389,6 +390,17 @@ const VIEM_RPC = {
 const VIEM_NAME = { 84532: 'Base Sepolia', 8453: 'Base', 1: 'Ethereum', 42161: 'Arbitrum', 10: 'Optimism', 137: 'Polygon' };
 const AQUA = '0x1111113ccf1426a8e30e2bff5e005d929bf6a90a';
 const ROUTER = '0x111111338c5091e8440b67b168bae16a668ac0de';
+// Base Builder Code (ERC-8021 attribution): our transactions carry this suffix
+// so Base attributes onchain activity to TRDEFI (leaderboard + rewards).
+// Docs: dashboard.base.org > Settings > Builder Code. No contract changes needed.
+const BUILDER_CODE = 'bc_i7lolfkg';
+function builderSuffix(){
+  const marker = '80218021802180218021802180218021', schemaId = '00';
+  let hex = '';
+  for(let i = 0; i < BUILDER_CODE.length; i++) hex += BUILDER_CODE.charCodeAt(i).toString(16).padStart(2, '0');
+  hex += BUILDER_CODE.length.toString(16).padStart(2, '0') + schemaId + marker;
+  return '0x' + hex;
+}
 const EXPLORER = { baseSepolia: 'https://sepolia.basescan.org/tx/', base: 'https://basescan.org/tx/', ethereum: 'https://etherscan.io/tx/', arbitrum: 'https://arbiscan.io/tx/', optimism: 'https://optimistic.etherscan.io/tx/', polygon: 'https://polygonscan.com/tx/' };
 let twAccount = null;
 let MODE = null; // 'native' (EIP-6963 + viem, no vendor) | 'tw' (thirdweb email/mobile)
@@ -456,18 +468,17 @@ function uread(chainId, to, abi, fn, args){
 // Unified write: native viem OR thirdweb account depending on connection mode
 async function uwrite(keyOrId, to, abi, fn, args){
   const chainId = typeof keyOrId === 'number' ? keyOrId : CHAIN_IDS[keyOrId];
+  // Build calldata manually so we can append the ERC-8021 builder suffix.
+  const data = encodeFnFn({ abi, functionName: fn, args }) + builderSuffix().slice(2);
   if(MODE === 'native'){
     await ensureChain(NAT.provider, chainId);
     const wc = createWalletClient({ chain: vchain(chainId), transport: custom(NAT.provider) });
-    const hash = await wc.writeContract({ address: to, abi, functionName: fn, args, account: NAT.address, chain: vchain(chainId) });
+    const hash = await wc.sendTransaction({ account: NAT.address, to, data, chain: vchain(chainId) });
     await pubClient(chainId).waitForTransactionReceipt({ hash });
     return { transactionHash: hash };
   }
   const key = typeof keyOrId === 'number' ? Object.keys(CHAIN_IDS).find(k => CHAIN_IDS[k] === keyOrId) : keyOrId;
-  const contract = getContract({ client: CLIENT, chain: key === 'baseSepolia' ? baseSepolia : CHAINS[key], address: to });
-  const tx = prepareContractCall({ contract, method: fn === 'ship' ? 'function ship(address,bytes,address[],uint256[]) returns (bytes32)'
-    : fn === 'dock' ? 'function dock(address,bytes32,address[])'
-    : 'function approve(address,uint256) returns (bool)', params: args });
+  const tx = prepareTransaction({ to, data, chain: key === 'baseSepolia' ? baseSepolia : CHAINS[key], client: CLIENT });
   return sendTransaction({ transaction: tx, account: twAccount });
 }
 

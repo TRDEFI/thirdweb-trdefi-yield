@@ -1,6 +1,19 @@
 [build]
   publish = "."
 
+# Allow cross-origin reads of the public pages (e.g. Base Dashboard domain
+# verification fetches the homepage meta tag from the browser; without this
+# the read is blocked and verification fails).
+[[headers]]
+  for = "/*.html"
+  [headers.values]
+    Access-Control-Allow-Origin = "*"
+
+[[headers]]
+  for = "/"
+  [headers.values]
+    Access-Control-Allow-Origin = "*"
+
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/:splat"
