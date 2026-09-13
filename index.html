@@ -9,12 +9,24 @@
 <style>
 :root{--bg:#07070c;--surface:#0e0e18;--raised:#141422;--border:#1e1e35;--gold:#f59e0b;--gold-dim:#d4a017;--green:#22c55e;--fg:#f0f0f5;--muted:#9898b2;--dim:#6c6c88}
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:var(--bg);color:var(--fg);font-family:'IBM Plex Sans',-apple-system,sans-serif;line-height:1.6;padding:0 0 60px}
-.wrap{max-width:1060px;margin:0 auto;padding:0 20px}
-.hero{text-align:center;padding:64px 20px 40px;background:radial-gradient(ellipse at 50% 0%,rgba(245,158,11,.12),transparent 60%)}
-.hero h1{font-size:34px;letter-spacing:-.5px;margin-bottom:12px}
-.hero h1 span{color:var(--gold)}
-.hero p{color:var(--muted);max-width:640px;margin:0 auto 24px;font-size:15px}
+body{background:radial-gradient(1400px 700px at 50% -12%,rgba(245,158,11,.07),transparent 60%),var(--bg);color:var(--fg);font-family:'IBM Plex Sans',-apple-system,sans-serif;line-height:1.6;padding:0 0 60px}
+html{scroll-behavior:smooth}
+.wrap{max-width:1400px;margin:0 auto;padding:0 24px}
+.hero{max-width:1400px;margin:0 auto;padding:22px 24px 2px}
+.hero p{color:var(--muted);max-width:920px;margin:0;font-size:15px}
+.topbar{position:sticky;top:0;z-index:50;background:rgba(10,10,18,.82);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+.topbar-inner{max-width:1400px;margin:0 auto;padding:12px 24px;display:flex;align-items:center;gap:18px;justify-content:space-between;flex-wrap:wrap}
+.brand{font-size:18px;font-weight:700;color:var(--fg);text-decoration:none;letter-spacing:-.3px}
+.brand span{color:var(--gold)}
+.topnav{display:flex;gap:16px;flex-wrap:wrap}
+.topnav a{color:var(--muted);text-decoration:none;font-size:13.5px}
+.topnav a:hover{color:var(--gold)}
+.auth{display:flex;align-items:center;gap:10px;position:relative;flex-wrap:wrap}
+.pill{font-size:12px;color:var(--muted);border:1px solid var(--border);border-radius:20px;padding:4px 12px}
+.authpanel{position:absolute;right:0;top:calc(100% + 8px);width:min(360px,92vw);background:var(--raised);border:1px solid var(--border);border-radius:12px;padding:16px;box-shadow:0 18px 40px rgba(0,0,0,.5);display:flex;flex-direction:column;gap:8px;z-index:60}
+.authpanel[hidden]{display:none}
+.authpanel .btn{margin-left:0}
+@media(max-width:720px){.topnav{display:none}.hero{padding-top:16px}}
 .btn{display:inline-block;background:var(--gold);color:#000;font-weight:700;border:none;border-radius:10px;padding:12px 26px;font-size:15px;cursor:pointer;text-decoration:none}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 .btn.ghost{background:transparent;color:var(--gold);border:1px solid var(--gold-dim);margin-left:10px}
@@ -59,35 +71,51 @@ footer a{color:var(--gold);text-decoration:none}
 </script>
 </head>
 <body>
+<header class="topbar" id="top">
+  <div class="topbar-inner">
+    <a class="brand" href="#top">TRDEFI <span>App</span></a>
+    <nav class="topnav">
+      <a href="#mainnet">Active LPs</a>
+      <a href="#posMainnet">Dashboard</a>
+      <a href="#trial">Sepolia trial</a>
+    </nav>
+    <div class="auth">
+      <span class="pill" id="connLine">Connection: <span class="warn">not connected</span></span>
+      <button class="btn" id="connectToggle" style="padding:8px 18px;font-size:14px">Connect</button>
+      <span id="walletLine" style="display:none" class="pill">Connected: <span id="walletAddr"></span> <button class="btn ghost" id="logoutBtn" style="padding:3px 10px;font-size:11px;margin-left:8px">Log out</button></span>
+      <div class="authpanel" id="authPanel" hidden>
+        <strong style="font-size:13px">Connect a wallet</strong>
+        <button class="btn" id="deskBtn">Desktop — extension</button>
+        <button class="btn ghost" id="mobBtn">Mobile — QR</button>
+        <div id="emailZone" style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px">
+          <span class="note" style="margin-top:0">No extension? Login with email:</span>
+          <input type="text" id="emailInput" placeholder="you@company.com" style="margin-top:6px">
+          <button class="btn ghost" id="emailSendBtn" style="margin-top:6px">Send code</button>
+          <input type="text" id="otpInput" placeholder="code" style="display:none;margin-top:6px">
+          <button class="btn ghost" id="emailVerifyBtn" style="display:none;margin-top:6px">Verify &amp; connect</button>
+        </div>
+        <p class="note" id="extLine">Checking for browser extension…</p>
+        <p class="note" style="font-size:11px">Log out clears this page session. MetaMask keeps site permission until you remove it (MetaMask → Connected sites). Keys stay with their owner.</p>
+      </div>
+    </div>
+  </div>
+</header>
+
 <div class="hero">
-  <h1>TRDEFI App</h1>
-  <p>Earn swap fees on any verified pair without moving funds from your wallet. Connect, pick a pair, set your commission, approve — revoke anytime in one transaction. No lock-up. No guaranteed APY.</p>
-  <div id="connectZone">
-    <button class="btn" id="deskBtn">🖥️ Desktop — extension login</button>
-    <button class="btn ghost" id="mobBtn">📱 Mobile — QR login</button>
-    <a class="btn ghost" href="#studio">Open Maker Studio</a>
-  </div>
-  <p class="note" id="extLine">Checking for browser extension…</p>
-  <p class="note" id="connLine">Connection: <span class="warn">not connected</span></p>
-  <div id="emailZone" style="margin-top:8px">
-    <span class="note">No extension? Login with email instead: </span>
-    <input type="text" id="emailInput" placeholder="you@company.com" style="max-width:240px;display:inline-block">
-    <button class="btn ghost" id="emailSendBtn" style="margin-left:6px">Send code</button>
-    <input type="text" id="otpInput" placeholder="code" style="max-width:110px;display:none;margin-left:6px">
-    <button class="btn ghost" id="emailVerifyBtn" style="display:none;margin-left:6px">Verify &amp; connect</button>
-  </div>
-  <p class="note" id="walletLine" style="display:none">Connected: <span id="walletAddr"></span> <button class="btn ghost" id="logoutBtn" style="padding:4px 12px;font-size:11px;margin-left:8px">Log out</button></p>
-  <p class="note" style="font-size:11px">Log out clears this page session. MetaMask keeps site permission until you remove it (MetaMask → Connected sites).</p>
-  <p class="note">Login with email/social (thirdweb) or connect Safe / MetaMask. Keys stay with their owner — thirdweb-hosted for email login, self-held for connected wallets.</p>
+  <p>Earn swap fees on active Aqua liquidity without moving funds from your wallet. Connect, pick a pair, set your commission, approve — revoke anytime in one transaction. No lock-up. No guaranteed APY.</p>
 </div>
 
 <div class="wrap">
   <div class="card" id="mainnet">
-    <h2>1 · Mainnet — active chains &amp; pairs + Maker Studio</h2>
-    <div class="sub">Left: chains and pairs with on-chain activity (“active now”) or contracts deployed (“supported”). Right: build and ship a maker strategy on a mainnet chain.</div>
+    <h2>1 · Active Aqua LP strategies + Maker Studio</h2>
+    <div class="sub">Left: maker strategies currently open on-chain (shipped, not docked) across Base, Ethereum, Arbitrum, Optimism and Polygon. Right: build and ship a new maker strategy.</div>
     <div class="cols">
       <div>
-        <div id="pairList"><p class="note">Loading…</p></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <strong style="font-size:14px">Active LP strategies</strong>
+          <button class="btn ghost" id="lpRefreshBtn" style="padding:4px 12px;font-size:11px;margin-left:0">↻ Refresh</button>
+        </div>
+        <div id="pairList"><p class="note">Scanning on-chain Aqua strategies…</p></div>
       </div>
       <div id="studio">
         <h3>Maker Studio</h3>
@@ -201,17 +229,15 @@ let wallet = null, account = null, pairs = [];
 const $ = id => document.getElementById(id);
 const short = h => h ? h.slice(0,10)+'…'+h.slice(-6) : '—';
 
-// Curated pairs (addresses verified from backend config). Merged UNDER live scan results.
-const KNOWN = [
-  {chain:'ethereum', pair:'USDC/USDT', tokenA:'0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', tokenB:'0xdAC17F958D2ee523a2206206994597C13D831ec7', verified:true},
-  {chain:'base', pair:'USDC/USDT', tokenA:'0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', tokenB:'0xfde4C96c8593536E31F229EA8f37b2ADa2699BB2', verified:true},
-  {chain:'arbitrum', pair:'USDC/USDT', tokenA:'0xaf88d065e77c8cC2239327C5EDb3A432268e5831', tokenB:'0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9', verified:true},
-  {chain:'optimism', pair:'USDC/USDT', tokenA:'0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85', tokenB:'0x94b008aA00579c1307B0EF2c499aD98a8ce58e58', verified:true},
-  {chain:'polygon', pair:'USDC/USDT', tokenA:'0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359', tokenB:'0xc2132D05D31c914a87C6611C10748AEb04B58e8F', verified:true},
-  {chain:'ethereum', pair:'WETH/USDT', tokenA:'0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2', tokenB:'0xdAC17F958D2ee523a2206206994597C13D831ec7', verified:false},
-  {chain:'ethereum', pair:'WBTC/USDT', tokenA:'0x2260fac5e5542a773aa44fbcfedf7c193bc2c599', tokenB:'0xdAC17F958D2ee523a2206206994597C13D831ec7', verified:false},
-  {chain:'ethereum', pair:'1INCH/USDT', tokenA:'0x111111111117dc0aa78b770fa6a738034120c302', tokenB:'0xdAC17F958D2ee523a2206206994597C13D831ec7', verified:false},
+// Supported pairs used ONLY by the Maker Studio "new" option (not shown as fake "active" entries).
+const SUPPORTED = [
+  {chain:'ethereum', pair:'USDC/USDT', tokenA:'0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', tokenB:'0xdac17f958d2ee523a2206206994597c13d831ec7'},
+  {chain:'base', pair:'USDC/USDT', tokenA:'0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', tokenB:'0xfde4c96c8593536e31f229ea8f37b2ada2699bb2'},
+  {chain:'arbitrum', pair:'USDC/USDT', tokenA:'0xaf88d065e77c8cc2239327c5edb3a432268e5831', tokenB:'0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9'},
+  {chain:'optimism', pair:'USDC/USDT', tokenA:'0x0b2c639c533813f4aa9d7837caf62653d097ff85', tokenB:'0x94b008aa00579c1307b0ef2c499ad98a8ce58e58'},
+  {chain:'polygon', pair:'USDC/USDT', tokenA:'0x3c499c542cef5e3811e1192ce70dc0c03d5c3359', tokenB:'0xc2132d05d31c914a87c6611c10748aeb04b58e8f'},
 ];
+let activeLPs = [];
 
 // 0 · Wallet discovery + auth state (plain JS, zero dependencies — ALWAYS runs)
 (function(){
@@ -239,57 +265,59 @@ const KNOWN = [
     }, 600);
   }catch(e){}
 })();
-async function loadPairs(){
-  let live = [];
-  try{
-    const r = await fetch(API + '?filter=active&limit=50');
-    const j = await r.json();
-    const seen = new Map();
-    (j.strategies||[]).forEach(s=>{
-      const key = s.chain+':'+s.pair;
-      if(seen.has(key)) return;
-      const toks = (s.tokens||[]).map(t=>t.token).sort();
-      seen.set(key,{chain:s.chain,pair:s.pair,verified:!!s.pair_verified,hash:s.strategy_hash,maker:s.maker,
-        tokenA:toks[0]||null,tokenB:toks[1]||null,src:'live'});
-    });
-    live = [...seen.values()];
-  }catch(e){ /* offline → curated only */ }
-  pairs = [...live];
-  for(const k of KNOWN){
-    if(!pairs.some(p=>p.chain===k.chain && p.pair===k.pair)) pairs.push({...k,src:'list'});
+function renderPairList(){
+  const el = $('pairList'); if(!el) return;
+  if(!activeLPs.length){
+    el.innerHTML = '<p class="note">No active Aqua LP strategies found in the recent window. Ship one from the Maker Studio, then press ↻ Refresh.</p>';
+    return;
   }
-  // Normalize: viem rejects non-checksummed mixed-case addresses
-  pairs.forEach(p=>{ if(p.tokenA) p.tokenA = p.tokenA.toLowerCase(); if(p.tokenB) p.tokenB = p.tokenB.toLowerCase(); });
-  if(!pairs.length) pairs = [{chain:'base',pair:'USDC/USDT',verified:true,src:'fallback'}];
-  window.__pairs = pairs;
-  const nLive = pairs.filter(p=>p.src==='live').length;
-  const pc = $('pairCount'); if(pc) pc.textContent = `· ${pairs.length} pairs (${nLive} live on-chain)`;
-  $('pairList').innerHTML = `<p class="note" style="margin-bottom:8px">${pairs.length} pairs · ${nLive} live on-chain</p>` + pairs.map((p,i)=>{
-    const state = p.src==='live' ? '<span class="tag">active now</span>'
-      : '<span class="tag" style="color:var(--gold);border-color:rgba(245,158,11,.4)">supported</span>';
-    const ver = p.verified ? ' ✓' : '';
-    return `<div class="pairchip${i===0?' sel':''}" data-i="${i}"><span><b>${p.pair}${ver}</b> <span style="color:var(--dim);font-size:12px">${p.chain}</span></span>${state}</div>`;
+  el.innerHTML = `<p class="note" style="margin-bottom:8px">${activeLPs.length} active strateg${activeLPs.length === 1 ? 'y' : 'ies'} on-chain</p>` + activeLPs.map(p=>{
+    const mk = p.maker ? p.maker.slice(0, 8) + '…' + p.maker.slice(-4) : '—';
+    const hash = p.hash ? ' · ' + p.hash.slice(0, 10) + '…' : '';
+    return `<div class="pairchip" style="cursor:default;display:block"><div style="display:flex;justify-content:space-between;align-items:center">` +
+      `<span><b>${p.pair}</b> <span style="color:var(--dim);font-size:12px">${p.chain}</span></span><span class="tag">active</span></div>` +
+      `<div style="font-size:11px;color:var(--dim);margin-top:4px">maker ${mk}${hash}</div></div>`;
   }).join('');
-  $('pairSelect').innerHTML = pairs.map((p,i)=>`<option value="${i}">${p.pair} — ${p.chain}${p.verified?' ✓':''}</option>`).join('');
-  document.querySelectorAll('.pairchip').forEach(c=>c.onclick=()=>{
-    document.querySelectorAll('.pairchip').forEach(x=>x.classList.remove('sel'));
-    c.classList.add('sel'); $('pairSelect').value=c.dataset.i;
-  });
 }
+function buildStudioOptions(){
+  const opts = [];
+  activeLPs.forEach(p => opts.push({ ...p, kind: 'lp', verified: true }));
+  SUPPORTED.forEach(p => { if(!opts.some(o => o.chain === p.chain && o.pair === p.pair)) opts.push({ ...p, kind: 'new' }); });
+  window.__pairs = opts;
+  $('pairSelect').innerHTML = opts.map((p, i) =>
+    `<option value="${i}">${p.pair} — ${p.chain} (${p.kind === 'lp' ? 'active LP' : 'new'})</option>`).join('');
+}
+async function loadPairs(){
+  const el = $('pairList');
+  if(el) el.innerHTML = '<p class="note">Scanning on-chain Aqua strategies… (10–20s)</p>';
+  try{
+    activeLPs = window.__activeLPs ? await window.__activeLPs() : [];
+  }catch(e){ activeLPs = []; }
+  renderPairList();
+  buildStudioOptions();
+}
+if($('lpRefreshBtn')) $('lpRefreshBtn').onclick = loadPairs;
 
 // 2 · connect buttons are bound in the ESM module below (needs thirdweb SDK).
 // This stub only fills the fee-receiver hint once connected.
+function renderAuthUI(){
+  const connected = !!(window.__auth && window.__auth.connected);
+  const tog = $('connectToggle'); if(tog) tog.style.display = connected ? 'none' : 'inline-block';
+  const wl = $('walletLine'); if(wl) wl.style.display = connected ? 'inline-flex' : 'none';
+  const panel = $('authPanel'); if(panel && connected) panel.hidden = true;
+  if($('walletAddr') && connected) $('walletAddr').textContent = window.__auth.address || '';
+}
 function afterConnect(addr){
   $('walletAddr').textContent = addr;
-  $('walletLine').style.display='block';
-  const cl = $('connLine'); if(cl) cl.innerHTML = 'Connection: <span class="ok">connected (' + addr.slice(0,10) + '…)</span>';
+  const cl = $('connLine'); if(cl) cl.innerHTML = 'Connection: <span class="ok">connected</span>';
+  renderAuthUI();
   loadPositions(addr.toLowerCase());
   renderTrialPositions();
   const fr = $('feeReceiver'); if(fr && !fr.value) fr.placeholder = addr + ' (default)';
 }
 function afterDisconnect(){
   const cl = $('connLine'); if(cl) cl.innerHTML = 'Connection: <span class="warn">not connected</span>';
-  $('walletLine').style.display='none';
+  renderAuthUI();
   const m = document.getElementById('posListMainnet');
   if(m) m.innerHTML = '<p class="note">Connect a wallet to see your mainnet positions.</p>';
   const s = document.getElementById('posListSepolia');
@@ -302,6 +330,10 @@ function doLogout(){
   renderTrialPositions();
 }
 document.getElementById('logoutBtn').onclick = doLogout;
+const connectToggle = document.getElementById('connectToggle');
+if(connectToggle) connectToggle.onclick = () => { const p = $('authPanel'); if(p) p.hidden = !p.hidden; };
+window.__authChangeHandlers.push(renderAuthUI);
+renderAuthUI();
 
 // Trial positions (browser storage, filtered by connected wallet)
 function renderTrialPositions(){
@@ -400,7 +432,7 @@ window.__exitPos = async (i)=>{
   }catch(e){ alert('Exit failed: ' + (e && e.message || e)); }
 };
 
-loadPairs();
+// loadPairs() is invoked by the module once window.__activeLPs is defined.
 </script>
 <script type="module">
 import { buildRetailProgram, buildTraits, buildOrderData } from './ai-agent/build-order.js';
@@ -990,6 +1022,91 @@ window.__scanAll = () => {
   const m = ((NAT && NAT.address) || (twAccount && twAccount.address) || (window.__auth && window.__auth.address) || '').toLowerCase();
   if(m) window.__scanDashboard(m);
 };
+// Public list of active Aqua LP strategies across mainnets (shipped, not docked).
+window.__activeLPs = async function(){
+  await ensureViem();
+  const enc = new TextEncoder();
+  const shipTopic = keccak256Fn(enc.encode('Shipped(address,address,bytes32,bytes)'));
+  const dockTopic = keccak256Fn(enc.encode('Docked(address,address,bytes32)'));
+  const DEPTH = 20000n;
+  const hex = n => '0x' + n.toString(16);
+  const addrOf = w => '0x' + w.slice(-40).toLowerCase();
+  const parse = l => {
+    const t = l.topics || [];
+    let maker, app, hash, dataHex = '';
+    if(t.length >= 4){ maker = addrOf(t[1]); app = addrOf(t[2]); hash = t[3].toLowerCase(); }
+    else {
+      const d = (l.data || '0x').slice(2);
+      maker = addrOf('0x' + (d.slice(24, 64) || '0'.repeat(40)));
+      app = addrOf('0x' + (d.slice(88, 128) || '0'.repeat(40)));
+      hash = ('0x' + (d.slice(128, 192) || '0'.repeat(64))).toLowerCase();
+      dataHex = d;
+    }
+    let tokens = [];
+    try{
+      if(dataHex){
+        const lenPos = parseInt(dataHex.slice(192, 256), 16) * 2;
+        let b = lenPos + 64;
+        if(parseInt(dataHex.slice(b, b + 64), 16) === 32) b += 64;
+        const dataOff = parseInt(dataHex.slice(b + 128, b + 192), 16) * 2;
+        const dataLenPos = b + dataOff;
+        const dLen = parseInt(dataHex.slice(dataLenPos, dataLenPos + 64), 16);
+        if(dLen > 40){
+          const tA = '0x' + dataHex.slice(dataLenPos + 64, dataLenPos + 104);
+          const tB = '0x' + dataHex.slice(dataLenPos + 104, dataLenPos + 144);
+          if(/^0x[0-9a-f]{40}$/i.test(tA) && /^0x[0-9a-f]{40}$/i.test(tB)) tokens = [tA.toLowerCase(), tB.toLowerCase()];
+        }
+      }
+    }catch(e){}
+    return { maker, app, hash, tokens };
+  };
+  const out = [];
+  const chains = DASH_CHAINS.filter(c => c.section === 'MAINNET');
+  await Promise.all(chains.map(async cfg => {
+    try{
+      const latest = BigInt(await rpcCall(VIEM_RPC[cfg.id], 'eth_blockNumber', []));
+      const from0 = latest > DEPTH ? latest - DEPTH : 0n;
+      const shipped = [], docked = [];
+      const getLogs = async (topic, from, to, sink) => {
+        let span = (to - from + 1n) > 10000n ? 10000n : (to - from + 1n);
+        let cur = from;
+        while(cur <= to){
+          const end = cur + span - 1n > to ? to : cur + span - 1n;
+          try{
+            const r = await rpcCall(VIEM_RPC[cfg.id], 'eth_getLogs', [{ address: cfg.aqua, topics: [topic], fromBlock: hex(cur), toBlock: hex(end) }]);
+            for(const l of r) sink.push(l);
+            cur = end + 1n;
+          }catch(err){ if(span <= 1000n) throw err; span = span / 2n; }
+        }
+      };
+      await Promise.all([getLogs(shipTopic, from0, latest, shipped), getLogs(dockTopic, from0, latest, docked)]);
+      const map = new Map();
+      for(const l of shipped){
+        const { maker, app, hash, tokens } = parse(l);
+        if(!hash) continue;
+        const k = app + hash;
+        const e = map.get(k) || { maker, app, hash, shipBlock: 0n, shipTx: null, dockBlock: null, tokens: [] };
+        const b = BigInt(l.blockNumber);
+        if(b >= e.shipBlock){ e.shipBlock = b; e.shipTx = l.transactionHash; if(tokens.length) e.tokens = tokens; }
+        map.set(k, e);
+      }
+      for(const l of docked){
+        const { app, hash } = parse(l);
+        if(!hash) continue;
+        const e = map.get(app + hash);
+        if(e){ const b = BigInt(l.blockNumber); if(!e.dockBlock || b > e.dockBlock) e.dockBlock = b; }
+      }
+      for(const e of map.values()){
+        if(!e.shipTx) continue;
+        if(e.dockBlock && e.shipBlock < e.dockBlock) continue; // docked
+        let tokens = e.tokens && e.tokens.length ? e.tokens : [];
+        if(!tokens.length && e.shipTx){ try{ tokens = await shipTokens(VIEM_RPC[cfg.id], e.shipTx); }catch(err){} }
+        out.push({ chain: cfg.key, pair: tokens.length ? tokens.map(symOrShort).join(' / ') : 'pair', tokenA: tokens[0] || null, tokenB: tokens[1] || null, hash: e.hash, maker: e.maker, app: e.app, shipTx: e.shipTx });
+      }
+    }catch(err){ console.warn('activeLPs ' + cfg.key + ':', (err && err.message) || err); }
+  }));
+  return out;
+};
 window.__exitDash = async (g) => {
   const s = (window.__dashFlat || [])[g]; if(!s) return;
   if(!s.tokens.length){ alert('Token list unresolved for this strategy.'); return; }
@@ -1236,6 +1353,9 @@ $t('trialBtn').onclick = async ()=>{
     renderTrialPositions();
   }catch(e){ log('FAILED: ' + (e && e.message || e)); }
 };
+
+// Kick off the active-LP scan now that window.__activeLPs exists.
+loadPairs();
 </script>
 </body>
 </html>
