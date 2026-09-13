@@ -579,15 +579,18 @@ async function orderFromShipTx(chainId, txHash){
       if(!t.length || (t[0]||'').toLowerCase() !== shipTopic) continue;
       if(t.length >= 4) return null; // indexed variant: order bytes not in data
       const d = (l.data || '0x').slice(2);
-      // head: maker, app, hash, bytesOffset → length word at 256, order bytes at 320
-      const orderLen = parseInt(d.slice(256, 320), 16) || 0;
+      // head: maker, app, hash, bytesOffset → strategy bytes follow the length word
+      const lenPos = parseInt(d.slice(192, 256), 16) * 2;
+      const orderLen = parseInt(d.slice(lenPos, lenPos + 64), 16) || 0;
       if(orderLen < 96) continue;
-      const o = d.slice(320, 320 + orderLen * 2); // abi.encode(order struct)
-      const maker = '0x' + o.slice(24, 64);
-      const traits = BigInt('0x' + o.slice(64, 128));
-      const dataOff = parseInt(o.slice(128, 192), 16) * 2; // offset to `data` = 96 → 192
-      const dataLen = parseInt(o.slice(dataOff, dataOff + 64), 16);
-      const data = '0x' + o.slice(dataOff + 64, dataOff + 64 + dataLen * 2);
+      const o = d.slice(lenPos + 64, lenPos + 64 + orderLen * 2);
+      let b = 0;
+      if(parseInt(o.slice(0, 64), 16) === 32) b = 64; // tuple-wrapped (416-byte) form
+      const maker = '0x' + o.slice(b + 24, b + 64);
+      const traits = BigInt('0x' + o.slice(b + 64, b + 128));
+      const dataOff = parseInt(o.slice(b + 128, b + 192), 16) * 2;
+      const dataLen = parseInt(o.slice(b + dataOff, b + dataOff + 64), 16);
+      const data = '0x' + o.slice(b + dataOff + 64, b + dataOff + 64 + dataLen * 2);
       return { maker, traits, data };
     }
   }catch(e){ console.warn('orderFromShipTx:', (e && e.message) || e); }
@@ -641,6 +644,10 @@ const SEP = {
 const $t = id => document.getElementById(id);
 const pad32 = h => h.replace(/^0x/,'').toLowerCase().padStart(64,'0');
 const u256 = n => BigInt(n).toString(16).padStart(64,'0');
+// Order is shipped/swapped as the ABI-encoded tuple `Order`, matching SwapVM.hash()
+// (keccak256(abi.encode(order))) and the TR-01 builder's 416-byte encoding.
+const ORDER_ABI = [{ type: 'tuple', components: [{ name: 'maker', type: 'address' }, { name: 'traits', type: 'uint256' }, { name: 'data', type: 'bytes' }] }];
+const buildOrderBytes = (maker, traits, dataHex) => encodeAbiFn(ORDER_ABI, [{ maker, traits, data: dataHex }]);
 function log(msg){ const o=$t('trialOut'); o.style.display='block'; o.textContent += msg+'\n'; }
 
 window.TW = {
@@ -729,7 +736,7 @@ window.TW = {
     const saltHex = '0x' + BigInt(Date.now()).toString(16).padStart(16,'0') + '0'.repeat(48);
     const programHex = buildRetailProgram({tokenA: tA, tokenB: tB, x0: amtA, y0: amtB, makerFeeBps: feeBps, feeReceiver: receiver, salt64: BigInt('0x' + saltHex.slice(2, 18))});
     const dataHex = buildOrderData({tokenA: tA, tokenB: tB, programHex});
-    const orderHex = '0x' + pad32(me) + u256(buildTraits()) + u256(96) + u256((dataHex.length-2)/2) + dataHex.slice(2) + '0'.repeat((64 - ((dataHex.length-2)/2*2 % 64)) % 64);
+    const orderHex = buildOrderBytes(me, buildTraits(), dataHex);
     lines.push(`Order: fee ${(feeBps/100000).toFixed(2)}%, ${((programHex.length-2)/2)} program bytes. Sign each step.`);
     const send = async (to, abi, fn, args, label) => {
       const res = await uwrite(chainId, to, abi, fn, args);
@@ -850,14 +857,18 @@ window.__scanDashboard = async function(maker){
       }
       let tokens = [];
       try{
-        // Event data: maker[0:64] app[64:128] hash[128:192] bytesOff[192:256],
-        // order at char 320: maker, traits, dataOff, then dataLen + packed tokenA(20) + tokenB(20)
-        const dataOffBytes = parseInt(dataHex.slice(448, 512), 16);
-        const dataAt = 320 + dataOffBytes * 2;
-        const dLen = parseInt(dataHex.slice(dataAt, dataAt + 64), 16);
+        // Event: maker[0:64] app[64:128] hash[128:192] bytesOffset[192:256], strategy bytes at 320.
+        // Strategy is abi.encode(Order): either flat [maker][traits][dataOff][len][data]
+        // or tuple-wrapped [outerOff=0x20][maker][traits][dataOff][len][data] (416-byte form).
+        const lenPos = parseInt(dataHex.slice(192, 256), 16) * 2;
+        let b = lenPos + 64;
+        if(parseInt(dataHex.slice(b, b + 64), 16) === 32) b += 64; // tuple form
+        const dataOff = parseInt(dataHex.slice(b + 128, b + 192), 16) * 2;
+        const dataLenPos = b + dataOff;
+        const dLen = parseInt(dataHex.slice(dataLenPos, dataLenPos + 64), 16);
         if(dLen > 40){
-          const tA = '0x' + dataHex.slice(dataAt + 64, dataAt + 104);
-          const tB = '0x' + dataHex.slice(dataAt + 104, dataAt + 144);
+          const tA = '0x' + dataHex.slice(dataLenPos + 64, dataLenPos + 104);
+          const tB = '0x' + dataHex.slice(dataLenPos + 104, dataLenPos + 144);
           if(/^0x[0-9a-f]{40}$/i.test(tA) && /^0x[0-9a-f]{40}$/i.test(tB) && tA.toLowerCase() < tB.toLowerCase()) tokens = [tA.toLowerCase(), tB.toLowerCase()];
         }
       }catch(e){}
@@ -1185,7 +1196,7 @@ $t('trialBtn').onclick = async ()=>{
     const programHex = buildRetailProgram({tokenA, tokenB, x0: balA, y0: balB, makerFeeBps: feeBps, feeReceiver: receiver, salt64});
     const traits = buildTraits();
     const dataHex = buildOrderData({tokenA, tokenB, programHex});
-    const orderHex = '0x' + pad32(me) + u256(traits) + u256(96) + u256((dataHex.length-2)/2) + dataHex.slice(2) + '0'.repeat((64 - ((dataHex.length-2)/2*2 % 64)) % 64);
+    const orderHex = buildOrderBytes(me, traits, dataHex);
     log(`Order ready: pair sorted, fee ${(feeBps/100000).toFixed(2)}%, ${((programHex.length-2)/2)} program bytes.`);
     setTrialStep('order', 'done');
     const send = async (to, abi, fn, args, label) => {
